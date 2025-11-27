@@ -1,0 +1,54 @@
+# Binaries
+/diskusage
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# goreleaser / release artifacts
+/dist/
+*.tar.gz
+*.zip
+
+# Go workspace
+/bin/
+/pkg/
+/vendor/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.iml
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# Logs, temp
+*.log
+*.tmp
+*.swp
+
+# Node
+node_modules/
+
+# Environment
+.env
+.env.local
+
+# Coverage
+coverage.out
+
+# Go build cache (optional)
+# $(go env GOCACHE) often under $GOPATH/pkg or $HOME/.cache/go-build
+
+# Ignore compiled archives
+*.a
+
+# nix
+result
+

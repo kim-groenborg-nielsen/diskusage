@@ -1,0 +1,66 @@
+project_name: diskusage
+
+# Basic goreleaser configuration for cross-building diskusage
+# Produces tar.gz archives for linux/darwin/windows on amd64 and arm64.
+
+builds:
+  - id: diskusage
+    main: ./
+    binary: diskusage
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.version={{.Tag}}
+
+archive:
+  format_overrides:
+    - goos: windows
+      format: zip
+  name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+archives:
+  - id: default
+    format: tar.gz
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  name_template: "{{ .Tag }}-SNAPSHOT"
+
+changelog:
+  use: "git"
+
+release:
+  github:
+    owner: "kim-groenborg-nielsen"
+    name: "diskusage"
+
+announce:
+  # disabled by default - users can wire this up later
+  github: false
+
+# Disable signing/publish by default in CI runs; goreleaser will still produce artifacts locally
+archives:
+  - id: default
+    format: tar.gz
+    files:
+      - README.md
+
+
+# Notes:
+# - Replace `your-github-username-or-org` with your GitHub org/user before enabling 'release'.
+# - To run locally (snapshot build):
+#     goreleaser --snapshot --skip-publish --rm-dist
+# - To do a full release (requires Git tag and configured GitHub token):
+#     goreleaser release
