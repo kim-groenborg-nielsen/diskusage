@@ -10,7 +10,6 @@ builds:
     binary: diskusage
     goos:
       - linux
-      - windows
       - darwin
     goarch:
       - amd64
