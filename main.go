@@ -19,6 +19,8 @@ import (
 
 // package-level version, populated via ldflags in releases (default 'dev')
 var version = "dev"
+var commit = "none"
+var date = "unknown"
 
 type DirStat struct {
 	Size  int64
@@ -362,7 +364,9 @@ func main() {
 
 	// If user asked for version, print and exit
 	if *versionFlag {
-		fmt.Println(version)
+		fmt.Println("Version: ", version)
+		fmt.Println("Commit:  ", commit)
+		fmt.Println("Date:    ", date)
 		return
 	}
 
