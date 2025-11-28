@@ -611,15 +611,33 @@ func main() {
 	if *jsonOut != "" {
 		// compute ended/ runtime now
 		endedAt := time.Now()
+		// enable progress messages inside jsonio when user requested progress
+		ProgressEnabled = *progress
+		if ProgressEnabled {
+			progressf("building JSON summary (this may take a moment)")
+		}
 		b, err := MarshalSummary(rootAbs, dirStats, userStats, groupStats, startedAt, endedAt, msStart, atomic.LoadInt64(&dirsScanned), atomic.LoadInt64(&filesScanned), version)
 		if err != nil {
 			log.Fatalf("failed to build json: %v", err)
 		}
+		// writing JSON output
 		if *jsonOut == "-" {
+			if ProgressEnabled {
+				progressf("writing JSON to stdout (-)")
+			}
 			fmt.Println(string(b))
+			if ProgressEnabled {
+				progressf("finished writing JSON to stdout, %d bytes", len(b))
+			}
 		} else {
+			if ProgressEnabled {
+				progressf("writing JSON to %s", *jsonOut)
+			}
 			if err := os.WriteFile(*jsonOut, b, 0644); err != nil {
 				log.Fatalf("failed to write json file: %v", err)
+			}
+			if ProgressEnabled {
+				progressf("finished writing JSON to %s, %d bytes", *jsonOut, len(b))
 			}
 		}
 		return

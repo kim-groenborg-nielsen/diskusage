@@ -14,6 +14,15 @@ import (
 	"time"
 )
 
+// ProgressEnabled controls whether jsonio reports progress messages to stderr.
+var ProgressEnabled bool
+
+func progressf(format string, a ...interface{}) {
+	if ProgressEnabled {
+		_, _ = fmt.Fprintf(os.Stderr, format+"\n", a...)
+	}
+}
+
 // JSON schema types
 type JsonDir struct {
 	Path  string `json:"path"`
@@ -212,10 +221,12 @@ func MarshalSummary(rootAbs string, dirStats map[string]*DirStat, userStats map[
 	}
 
 	// deterministic ordering
+	progressf("sorting dirs (%d), users (%d), groups (%d)", len(jo.Dirs), len(jo.Users), len(jo.Grps))
 	sort.Slice(jo.Dirs, func(i, j int) bool { return jo.Dirs[i].Path < jo.Dirs[j].Path })
 	sort.Slice(jo.Users, func(i, j int) bool { return jo.Users[i].Name < jo.Users[j].Name })
 	sort.Slice(jo.Grps, func(i, j int) bool { return jo.Grps[i].Name < jo.Grps[j].Name })
 
+	progressf("marshaling JSON: dirs=%d users=%d groups=%d", len(jo.Dirs), len(jo.Users), len(jo.Grps))
 	b, err := json.MarshalIndent(jo, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("marshal: %w", err)
