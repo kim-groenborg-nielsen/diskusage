@@ -50,15 +50,3 @@ release:
   github:
     owner: "kim-groenborg-nielsen"
     name: "diskusage"
-
-announce:
-  # disabled by default - users can wire this up later
-  github: false
-
-
-# Notes:
-# - Replace `your-github-username-or-org` with your GitHub org/user before enabling 'release'.
-# - To run locally (snapshot build):
-#     goreleaser --snapshot --skip-publish --rm-dist
-# - To do a full release (requires Git tag and configured GitHub token):
-#     goreleaser release
