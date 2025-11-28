@@ -322,6 +322,7 @@ func main() {
 		jsonOut     = flag.String("json", "", "write JSON summary to file (or '-' for stdout)")
 		readJSON    = flag.String("read-json", "", "read JSON summary from file and print human tree (skips scanning)")
 		versionFlag = flag.Bool("version", false, "show version and exit")
+		progress    = flag.Bool("progress", false, "print progress (processed files/dirs) every 2s; flags must come before positional <root>")
 	)
 
 	// Custom usage text: show flags and emphasize that options must come before the positional root arg.
@@ -524,6 +525,39 @@ func main() {
 	var filesScanned int64
 	var dirsScanned int64
 
+	// progress done channel for ticker goroutine; always created to simplify closing
+	done := make(chan struct{})
+	if *progress {
+		// start progress ticker that prints a concise, human-friendly status line (single-line)
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			var lastFiles int64
+			for {
+				select {
+				case <-ticker.C:
+					fscnt := atomic.LoadInt64(&filesScanned)
+					dirs := atomic.LoadInt64(&dirsScanned)
+					var m runtime.MemStats
+					runtime.ReadMemStats(&m)
+					elapsed := time.Since(startedAt)
+					// instant rate over last interval (files per second)
+					intervalSec := 2.0
+					rate := float64(fscnt-lastFiles) / intervalSec
+					lastFiles = fscnt
+					// single-line status (overwrites itself); avoid printing goroutine count or delta
+					memStr := humanizeBytes(int64(m.Alloc))
+					status := fmt.Sprintf("files=%d | %.1f/s | dirs=%d | mem=%s | %s", fscnt, rate, dirs, memStr, formatDurationShort(elapsed))
+					// pad with spaces to clear previous content and use \r to overwrite
+					_, _ = fmt.Fprintf(os.Stderr, "\r%s", status+"                                        ")
+				case <-done:
+					// stop without printing a newline; final will overwrite the line
+					return
+				}
+			}
+		}()
+	}
+
 	// Walk directory tree in main goroutine and push file paths into filesToProcess
 	err = filepath.WalkDir(rootAbs, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -545,6 +579,25 @@ func main() {
 	// finished enqueuing paths; close and wait for workers
 	close(filesToProcess)
 	workerWg.Wait()
+
+	// stop progress ticker and print final progress if progress flag enabled
+	// closing done signals the goroutine to exit; safe to close even if goroutine not started
+	close(done)
+	if *progress {
+		fscnt := atomic.LoadInt64(&filesScanned)
+		dirs := atomic.LoadInt64(&dirsScanned)
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		elapsed := time.Since(startedAt)
+		var avg float64
+		if elapsed.Seconds() > 0 {
+			avg = float64(fscnt) / elapsed.Seconds()
+		}
+		// final summary printed on its own line, overwrite previous progress with \r
+		memStr := humanizeBytes(int64(m.Alloc))
+		final := fmt.Sprintf("final: files=%d avg=%.1f/s dirs=%d mem=%s elapsed=%s", fscnt, avg, dirs, memStr, formatDurationShort(elapsed))
+		_, _ = fmt.Fprintf(os.Stderr, "\r%s\n", final)
+	}
 
 	// Build children map for printing
 	mu.Lock()
@@ -575,4 +628,17 @@ func main() {
 	// print tree and summaries
 	printTree(rootAbs, children, dirStats, userStats, groupStats, sizeStrMap, userSizeStr, groupSizeStr, maxSizeWidth, maxFilesWidth, *levels, *showFiles, *showUser, *showGroup, *bytesFlag, *topN, readMode, readOwners, readGroups)
 	return
+}
+
+// formatDurationShort returns a compact HH:MM:SS-like string for durations
+func formatDurationShort(d time.Duration) string {
+	s := int(d.Seconds())
+	h := s / 3600
+	s -= h * 3600
+	m := s / 60
+	s -= m * 60
+	if h > 0 {
+		return fmt.Sprintf("%02d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("%02d:%02d", m, s)
 }
