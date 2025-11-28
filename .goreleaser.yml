@@ -50,13 +50,6 @@ announce:
   # disabled by default - users can wire this up later
   github: false
 
-# Disable signing/publish by default in CI runs; goreleaser will still produce artifacts locally
-archives:
-  - id: default
-    format: tar.gz
-    files:
-      - README.md
-
 
 # Notes:
 # - Replace `your-github-username-or-org` with your GitHub org/user before enabling 'release'.
