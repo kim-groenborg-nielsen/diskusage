@@ -25,23 +25,16 @@ builds:
 archives:
   - format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - LICENSE
       - README.md
       - diskusage{{ if eq .Os "windows" }}.exe{{ end }}
-  - id: default
-    format: tar.gz
-    files:
-      - LICENSE
-      - README.md
 
 checksum:
   name_template: "checksums.txt"
-
-snapshot:
-  name_template: "{{ .Tag }}-SNAPSHOT"
 
 changelog:
   use: "git"
