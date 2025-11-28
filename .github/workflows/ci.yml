@@ -11,10 +11,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
           go-version: '1.25'
+
       - name: Cache Go modules
         uses: actions/cache@v4
         with:
@@ -24,12 +26,16 @@ jobs:
           key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
           restore-keys: |
             ${{ runner.os }}-go-
+
       - name: Install deps
         run: go mod download
+
       - name: Run tests
         run: go test ./...
+
       - name: Build
         run: go build -v -o diskusage ./...
+
       - name: Run linter (optional)
         run: |
           if ! command -v golangci-lint >/dev/null 2>&1; then
