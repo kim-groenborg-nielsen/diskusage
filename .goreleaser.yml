@@ -1,5 +1,6 @@
 project_name: diskusage
 
+version: 2
 # Basic goreleaser configuration for cross-building diskusage
 # Produces tar.gz archives for linux/darwin/windows on amd64 and arm64.
 
@@ -17,15 +18,19 @@ builds:
     env:
       - CGO_ENABLED=0
     ldflags:
-      - -s -w -X main.version={{.Tag}}
-
-archive:
-  format_overrides:
-    - goos: windows
-      format: zip
-  name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+      - -s -w -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
 
 archives:
+  - format_overrides:
+      - goos: windows
+        format: zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - diskusage{{ if eq .Os "windows" }}.exe{{ end }}
   - id: default
     format: tar.gz
     files:
