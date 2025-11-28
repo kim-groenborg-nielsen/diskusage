@@ -30,7 +30,6 @@ archives:
     files:
       - LICENSE
       - README.md
-      - diskusage{{ if eq .Os "windows" }}.exe{{ end }}
 
 checksum:
   name_template: "checksums.txt"
