@@ -79,3 +79,24 @@ Notes:
 ## JSON output
 
 When using the `-json` flag the program emits a structured JSON object. The top-level `stats` object includes timing and memory metrics and also contains a `version` field with the embedded binary version (e.g. `"version": "v1.2.3"` or `"dev"` for local builds).
+
+## Reading JSON and re-rendering the tree
+
+You can save a previous run's JSON summary and later render it as the human-readable tree output using `-read-json`.
+
+Examples:
+
+```bash
+# 1) Generate JSON summary (writes to out.json)
+./diskusage -levels 3 -files -user -group -json out.json /path/to/dir
+
+# 2) Render the tree from the JSON file (no scanning)
+./diskusage -read-json out.json
+
+# Or read JSON from stdin and render:
+cat out.json | ./diskusage -read-json -
+```
+
+Notes:
+- Flags (options) must come before positional arguments. `-read-json` is a read-only mode and skips scanning the filesystem.
+- The JSON format is the same as produced by `-json`; `-read-json` expects that shape.

@@ -14,10 +14,9 @@ jobs:
         uses: actions/setup-go@v4
         with:
           go-version: '1.25'
-      - name: Install goreleaser
-        run: curl -sSfL https://goreleaser.com/static/bash/latest.sh | bash
       - name: Run goreleaser
+        uses: goreleaser/goreleaser-action@v4
+        with:
+          args: release --rm-dist
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: goreleaser release --rm-dist
-
