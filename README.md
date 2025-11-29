@@ -1,6 +1,6 @@
 diskusage - concurrent disk usage reporter
 
-This is a small multithreaded disk-usage tool written in Go.
+A small multithreaded disk-usage tool written in Go. It scans a directory tree concurrently and prints aggregated directory sizes, optional file counts and ownership summaries. It can also emit a structured JSON summary (optionally gzipped) and read such JSON back to re-render the tree without scanning.
 
 Build
 
@@ -9,94 +9,87 @@ cd /Users/kgn/coding/novo/diskusage
 go build -o diskusage
 ```
 
-Usage
+Quick usage notes
+
+- Flags (options) must come before any positional `root` argument.
+- You can provide the root directory either with `-root <path>` or as the single positional argument after flags: `./diskusage [flags] <root>`.
+
+Examples
 
 ```bash
-# basic
-./diskusage -root /path/to/dir -levels 2
+# Scan /Users/me/projects and show 2 levels (default)
+./diskusage /Users/me/projects
 
-# show file counts and owners
-./diskusage -root /path/to/dir -levels 1 -files -user -group
+# Specify levels and show file counts + owners
+./diskusage -levels 1 -files -user -group /Users/me/projects
 
-# do not use human-readable sizes
-./diskusage -root /path/to/dir -levels 1 -human=false
+# Write JSON summary to a file (plain)
+./diskusage -levels 3 -files -user -group -json out.json /Users/me/projects
 
-# tune concurrency
-./diskusage -root /path -concurrency 16
+# Write gzipped JSON (auto-append .gz if missing)
+./diskusage -json out.json -gzip /Users/me/projects   # writes out.json.gz
+
+# Write gzipped JSON to stdout
+./diskusage -json - -gzip /Users/me/projects > out.json.gz
+
+# Read a JSON summary from file and render tree (no scanning)
+./diskusage -read-json out.json
+# Read gzipped JSON automatically detected and rendered
+./diskusage -read-json out.json.gz
+# Read JSON from stdin
+cat out.json | ./diskusage -read-json -
+
+# Show progress while scanning and building JSON
+./diskusage -progress -json out.json /Users/me/projects
 ```
 
 Flags
 
-- `-root` (string): root path to analyze (default `.`)
-- `-levels` (int): number of directory levels to display. `0` prints only the root entry. Default: `2`.
-- `-files` (bool): include number of files per directory
-- `-user` (bool): show directory owner user (username)
-- `-group` (bool): show directory owner group
-- `-human` (bool): print human-readable sizes (default true)
-- `-concurrency` (int): number of concurrent directory readers (defaults to 2 * CPU cores)
+- `-levels` int
+  - Number of directory levels to display (0 means only the root). Default: 2.
+- `-files` bool
+  - Show number of files per directory in the tree output.
+- `-user` bool
+  - Show directory owner user (resolved to username when possible).
+- `-group` bool
+  - Show directory owner group (resolved to group name when possible).
+- `-root` string
+  - Root path to analyze (can also be specified as the single positional argument). Default: `.`
+- `-concurrency` int
+  - Number of concurrent directory readers (default: 2 * CPU cores).
+- `-bytes` bool
+  - Print sizes in raw bytes instead of human-readable units (KB/MB/etc.). Default: human-readable units.
+- `-size-width` int
+  - Override size column width (0 = auto-fit).
+- `-files-width` int
+  - Override files column width (0 = auto-fit).
+- `-top` int
+  - Limit per-user/group lists to the top N entries by size (0 = all).
+- `-json` string
+  - Write JSON summary to file (or `-` for stdout). When writing to a file you can also pass `-gzip` to compress.
+- `-gzip` bool
+  - When used with `-json`, compress the JSON output with gzip. If writing to a file and the filename does not end with `.gz`, the program will append `.gz` automatically.
+- `-read-json` string
+  - Read a JSON summary from file (or `-` for stdin) and render the human tree without scanning. `LoadSummary` will auto-detect gzip-compressed input.
+- `-progress` bool
+  - Print periodic progress status (processed files/dirs, throughput, memory, elapsed time) while scanning and while building/writing JSON.
+- `-version` bool
+  - Print embedded version/commit/date and exit.
 
-Output
+Behavior & output
 
-The tool prints a small table with aggregated directory sizes (sums include all files in descendant directories). When `-files` is enabled it also prints file counts per directory. When `-user`/`-group` are enabled it prints owner information for each listed directory. Finally there are two summary sections: per-user and per-group totals (size and number of files).
+- The printed tree shows directories in descending total size order (sums include all files in descendant directories).
+- Numeric size and file count columns are right-aligned for easy scanning. Human-readable sizes include a unit suffix; the `-bytes` flag prints raw bytes.
+- The `-json` output contains a `stats` object with start/end times, runtime (seconds and human duration), memory/GC info and the embedded binary version.
+- When writing JSON with `-gzip`, the program streams JSON into a gzip writer to keep peak memory low.
+- `-read-json` accepts plain or gzipped JSON (the program auto-detects gzip) and will decode the JSON using a streaming decoder.
 
 Notes & limitations
 
-- The tool reads filesystem metadata using lstat and does not follow symlinks for directories (it treats symlink entries as files).
-- On platforms without `syscall.Stat_t` fields the UID/GID resolution may fall back to numeric IDs; on macOS and Linux it should work.
-- Exclusions, depth-based aggregation filtering, JSON output, sorting by size, and parallel traversal improvements can be added if you want.
+- The program uses lstat and does not follow directory symlinks; symlink entries are treated as files.
+- UID/GID resolution to names happens when possible; JSON output includes resolved user/group names and numeric ids when resolvable.
+- For very large trees the program streams JSON during output to reduce peak memory, but it still builds internal slices for deterministic sorting. If you need to process extremely large datasets with minimal memory, consider a streaming/partitioned approach.
 
-Next steps I can help with
+License
 
-- Add JSON or CSV output
-- Add include/exclude patterns
-- Add sorting or threshold filtering (e.g. show only dirs > 100MB)
-- Add unit tests and CI
-
-If you want any of these, tell me which and I'll implement it.
-
-## Release & distribution (goreleaser)
-
-This project includes a `.goreleaser.yml` to build cross-platform artifacts. Before using the release workflow, set the GitHub repo owner in `.goreleaser.yml` (already set to `kgn` in this repo; change if needed).
-
-Quick commands:
-
-```bash
-# Run tests and build locally
-make test
-make build
-
-# Create a local snapshot archive (no publish)
-make goreleaser-snapshot
-
-# Run a full release (requires a Git tag and GITHUB_TOKEN)
-make goreleaser-release
-```
-
-Notes:
-- On tags (v*), the GitHub Actions workflow will run goreleaser and publish releases.
-- goreleaser embeds the Git tag into the binary via ldflags; the program exposes the embedded version via `-version` and in JSON output.
-
-## JSON output
-
-When using the `-json` flag the program emits a structured JSON object. The top-level `stats` object includes timing and memory metrics and also contains a `version` field with the embedded binary version (e.g. `"version": "v1.2.3"` or `"dev"` for local builds).
-
-## Reading JSON and re-rendering the tree
-
-You can save a previous run's JSON summary and later render it as the human-readable tree output using `-read-json`.
-
-Examples:
-
-```bash
-# 1) Generate JSON summary (writes to out.json)
-./diskusage -levels 3 -files -user -group -json out.json /path/to/dir
-
-# 2) Render the tree from the JSON file (no scanning)
-./diskusage -read-json out.json
-
-# Or read JSON from stdin and render:
-cat out.json | ./diskusage -read-json -
-```
-
-Notes:
-- Flags (options) must come before positional arguments. `-read-json` is a read-only mode and skips scanning the filesystem.
-- The JSON format is the same as produced by `-json`; `-read-json` expects that shape.
+This repository is licensed under the MIT License (see `LICENSE`).

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"compress/gzip"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -11,6 +12,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -307,6 +309,13 @@ func buildChildrenAndSizes(dirStats map[string]*DirStat) (map[string][]string, m
 	return children, dirSizes
 }
 
+func addGzExt(p string) string {
+	if strings.HasSuffix(strings.ToLower(p), ".gz") {
+		return p
+	}
+	return p + ".gz"
+}
+
 func main() {
 	var (
 		levels      = flag.Int("levels", 2, "number of directory levels to display (0 means only root)")
@@ -323,6 +332,7 @@ func main() {
 		readJSON    = flag.String("read-json", "", "read JSON summary from file and print human tree (skips scanning)")
 		versionFlag = flag.Bool("version", false, "show version and exit")
 		progress    = flag.Bool("progress", false, "print progress (processed files/dirs) every 2s; flags must come before positional <root>")
+		gzipJSON    = flag.Bool("gzip", false, "compress JSON output with gzip; when writing to a file, .gz will be appended if missing")
 	)
 
 	// Custom usage text: show flags and emphasize that options must come before the positional root arg.
@@ -616,11 +626,58 @@ func main() {
 		if ProgressEnabled {
 			progressf("building JSON summary (this may take a moment)")
 		}
+		// If gzip requested, stream directly into gzip.Writer to avoid building large in-memory []byte
+		if *gzipJSON {
+			if *jsonOut == "-" {
+				if ProgressEnabled {
+					progressf("streaming gzipped JSON to stdout (-)")
+				}
+				gw := gzip.NewWriter(os.Stdout)
+				if err := StreamSummary(gw, rootAbs, dirStats, userStats, groupStats, startedAt, endedAt, msStart, atomic.LoadInt64(&dirsScanned), atomic.LoadInt64(&filesScanned), version); err != nil {
+					gw.Close()
+					log.Fatalf("failed to stream gzipped json to stdout: %v", err)
+				}
+				if err := gw.Close(); err != nil {
+					log.Fatalf("failed to close gzip writer: %v", err)
+				}
+				if ProgressEnabled {
+					progressf("finished streaming gzipped JSON to stdout")
+				}
+			} else {
+				outPath := addGzExt(*jsonOut)
+				if ProgressEnabled {
+					progressf("streaming gzipped JSON to %s", outPath)
+				}
+				f, err := os.Create(outPath)
+				if err != nil {
+					log.Fatalf("failed to create output file %s: %v", outPath, err)
+				}
+				gw := gzip.NewWriter(f)
+				if err := StreamSummary(gw, rootAbs, dirStats, userStats, groupStats, startedAt, endedAt, msStart, atomic.LoadInt64(&dirsScanned), atomic.LoadInt64(&filesScanned), version); err != nil {
+					gw.Close()
+					f.Close()
+					log.Fatalf("failed to stream gzipped json to %s: %v", outPath, err)
+				}
+				if err := gw.Close(); err != nil {
+					f.Close()
+					log.Fatalf("failed to close gzip writer: %v", err)
+				}
+				// stat file for size
+				st, _ := f.Stat()
+				if err := f.Close(); err != nil {
+					log.Fatalf("failed to close output file: %v", err)
+				}
+				if ProgressEnabled {
+					progressf("finished writing gzipped JSON to %s, %d bytes", outPath, st.Size())
+				}
+			}
+			return
+		}
+		// non-gzip path: build bytes and write (existing behavior)
 		b, err := MarshalSummary(rootAbs, dirStats, userStats, groupStats, startedAt, endedAt, msStart, atomic.LoadInt64(&dirsScanned), atomic.LoadInt64(&filesScanned), version)
 		if err != nil {
 			log.Fatalf("failed to build json: %v", err)
 		}
-		// writing JSON output
 		if *jsonOut == "-" {
 			if ProgressEnabled {
 				progressf("writing JSON to stdout (-)")
@@ -630,14 +687,15 @@ func main() {
 				progressf("finished writing JSON to stdout, %d bytes", len(b))
 			}
 		} else {
+			outPath := *jsonOut
 			if ProgressEnabled {
-				progressf("writing JSON to %s", *jsonOut)
+				progressf("writing JSON to %s", outPath)
 			}
-			if err := os.WriteFile(*jsonOut, b, 0644); err != nil {
+			if err := os.WriteFile(outPath, b, 0644); err != nil {
 				log.Fatalf("failed to write json file: %v", err)
 			}
 			if ProgressEnabled {
-				progressf("finished writing JSON to %s, %d bytes", *jsonOut, len(b))
+				progressf("finished writing JSON to %s, %d bytes", outPath, len(b))
 			}
 		}
 		return

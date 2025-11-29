@@ -1,15 +1,20 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
 	"os/user"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -83,8 +88,9 @@ type JsonOut struct {
 	Grps  []JsonGroup `json:"groups"`
 }
 
-// MarshalSummary builds a JsonOut from runtime data and returns pretty-printed JSON bytes.
-func MarshalSummary(rootAbs string, dirStats map[string]*DirStat, userStats map[string]*UserStat, groupStats map[string]*GroupStat, startedAt, endedAt time.Time, msStart runtime.MemStats, dirsScanned, filesScanned int64, version string) ([]byte, error) {
+// StreamSummary writes the JSON summary directly to an io.Writer. It's safe to pass a gzip.Writer
+// as the writer so the JSON is streamed into compressed output without creating a large []byte.
+func StreamSummary(w io.Writer, rootAbs string, dirStats map[string]*DirStat, userStats map[string]*UserStat, groupStats map[string]*GroupStat, startedAt, endedAt time.Time, msStart runtime.MemStats, dirsScanned, filesScanned int64, version string) error {
 	// collect memory stats
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
@@ -226,31 +232,165 @@ func MarshalSummary(rootAbs string, dirStats map[string]*DirStat, userStats map[
 	sort.Slice(jo.Users, func(i, j int) bool { return jo.Users[i].Name < jo.Users[j].Name })
 	sort.Slice(jo.Grps, func(i, j int) bool { return jo.Grps[i].Name < jo.Grps[j].Name })
 
-	progressf("marshaling JSON: dirs=%d users=%d groups=%d", len(jo.Dirs), len(jo.Users), len(jo.Grps))
-	b, err := json.MarshalIndent(jo, "", "  ")
-	if err != nil {
-		return nil, fmt.Errorf("marshal: %w", err)
+	// Stream the JSON with pretty indentation to the provided writer.
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+
+	// We'll write the object manually so we can stream large arrays without building an extra []byte buffer.
+	if _, err := io.WriteString(w, "{\n"); err != nil {
+		return err
 	}
-	return b, nil
+	// root
+	rootVal, _ := json.MarshalIndent(jo.Root, "", "  ")
+	rootLine := fmt.Sprintf("  \"root\": %s,\n", string(rootVal))
+	if _, err := io.WriteString(w, rootLine); err != nil {
+		return err
+	}
+	// stats
+	statsBytes, _ := json.MarshalIndent(jo.Stats, "", "  ")
+	statsLine := fmt.Sprintf("  \"stats\": %s,\n", string(statsBytes))
+	if _, err := io.WriteString(w, statsLine); err != nil {
+		return err
+	}
+
+	// dirs array
+	if _, err := io.WriteString(w, "  \"dirs\": [\n"); err != nil {
+		return err
+	}
+	for i, d := range jo.Dirs {
+		b, _ := json.MarshalIndent(d, "", "  ")
+		// indent entries by two spaces
+		entry := string(b)
+		// replace leading '{' with '    {' to keep pretty indent consistent
+		entry = indentString(entry, 4)
+		if i < len(jo.Dirs)-1 {
+			entry += ",\n"
+		} else {
+			entry += "\n"
+		}
+		if _, err := io.WriteString(w, entry); err != nil {
+			return err
+		}
+	}
+	if _, err := io.WriteString(w, "  ],\n"); err != nil {
+		return err
+	}
+
+	// users array
+	if _, err := io.WriteString(w, "  \"users\": [\n"); err != nil {
+		return err
+	}
+	for i, u := range jo.Users {
+		b, _ := json.MarshalIndent(u, "", "  ")
+		entry := indentString(string(b), 4)
+		if i < len(jo.Users)-1 {
+			entry += ",\n"
+		} else {
+			entry += "\n"
+		}
+		if _, err := io.WriteString(w, entry); err != nil {
+			return err
+		}
+	}
+	if _, err := io.WriteString(w, "  ],\n"); err != nil {
+		return err
+	}
+
+	// groups array
+	if _, err := io.WriteString(w, "  \"groups\": [\n"); err != nil {
+		return err
+	}
+	for i, g := range jo.Grps {
+		b, _ := json.MarshalIndent(g, "", "  ")
+		entry := indentString(string(b), 4)
+		if i < len(jo.Grps)-1 {
+			entry += ",\n"
+		} else {
+			entry += "\n"
+		}
+		if _, err := io.WriteString(w, entry); err != nil {
+			return err
+		}
+	}
+	if _, err := io.WriteString(w, "  ]\n"); err != nil {
+		return err
+	}
+
+	// close object
+	if _, err := io.WriteString(w, "}\n"); err != nil {
+		return err
+	}
+
+	// done
+	return nil
+}
+
+// indentString prefixes each line of s with n spaces (except empty lines)
+func indentString(s string, n int) string {
+	pad := strings.Repeat(" ", n)
+	lines := strings.Split(s, "\n")
+	for i, L := range lines {
+		if strings.TrimSpace(L) == "" {
+			lines[i] = ""
+		} else {
+			lines[i] = pad + L
+		}
+	}
+	return strings.Join(lines, "\n")
+
+}
+
+// MarshalSummary builds a JsonOut from runtime data and returns pretty-printed JSON bytes.
+func MarshalSummary(rootAbs string, dirStats map[string]*DirStat, userStats map[string]*UserStat, groupStats map[string]*GroupStat, startedAt, endedAt time.Time, msStart runtime.MemStats, dirsScanned, filesScanned int64, version string) ([]byte, error) {
+	// For backward compatibility we still construct the bytes via StreamSummary into a buffer.
+	var buf bytes.Buffer
+	if err := StreamSummary(&buf, rootAbs, dirStats, userStats, groupStats, startedAt, endedAt, msStart, dirsScanned, filesScanned, version); err != nil {
+		return nil, err
+	}
+	return ioutil.ReadAll(&buf)
 }
 
 // LoadSummary reads JSON summary from path (use "-" for stdin) and returns the parsed JsonOut.
 func LoadSummary(path string) (JsonOut, error) {
 	var jo JsonOut
-	var jb []byte
-	var err error
+	// Use a reader that allows peeking at the first bytes to detect gzip magic without reading everything.
+	var (
+		r   io.Reader
+		f   *os.File
+		err error
+	)
 	if path == "-" {
-		jb, err = io.ReadAll(os.Stdin)
-		if err != nil {
-			return jo, err
-		}
+		r = os.Stdin
 	} else {
-		jb, err = os.ReadFile(path)
+		f, err = os.Open(path)
 		if err != nil {
 			return jo, err
 		}
+		defer f.Close()
+		r = f
 	}
-	if err := json.Unmarshal(jb, &jo); err != nil {
+	bufr := bufio.NewReader(r)
+	// peek up to 2 bytes to detect gzip
+	peek, err := bufr.Peek(2)
+	if err != nil && err != io.EOF {
+		return jo, err
+	}
+	isGz := len(peek) >= 2 && peek[0] == 0x1f && peek[1] == 0x8b
+	if isGz {
+		gr, err := gzip.NewReader(bufr)
+		if err != nil {
+			return jo, fmt.Errorf("gzip reader: %w", err)
+		}
+		defer gr.Close()
+		dec := json.NewDecoder(gr)
+		if err := dec.Decode(&jo); err != nil {
+			return jo, err
+		}
+		return jo, nil
+	}
+	// not gzipped: decode directly from buffered reader
+	dec := json.NewDecoder(bufr)
+	if err := dec.Decode(&jo); err != nil {
 		return jo, err
 	}
 	return jo, nil
