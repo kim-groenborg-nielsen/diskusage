@@ -75,7 +75,8 @@ type JsonOut struct {
 }
 
 // MarshalSummary builds a JsonOut from runtime data and returns pretty-printed JSON bytes.
-func MarshalSummary(rootAbs string, dirStats map[string]*DirStat, userStats map[string]*UserStat, groupStats map[string]*GroupStat, startedAt, endedAt time.Time, msStart runtime.MemStats, dirsScanned, filesScanned int64, version string) ([]byte, error) {
+func MarshalSummary(rootAbs string, dirStats, userStats, groupStats StatMap, startedAt, endedAt time.Time,
+	msStart runtime.MemStats, dirsScanned, filesScanned int64, version string) ([]byte, error) {
 	// collect memory stats
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)

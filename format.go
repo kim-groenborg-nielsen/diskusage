@@ -5,7 +5,8 @@ import "strconv"
 // ComputeSizeMapsAndWidths builds combined size strings (mantissa+unit or raw bytes)
 // for directories, users, and groups and returns maps plus auto-fit widths for
 // the size column and files column.
-func ComputeSizeMapsAndWidths(dirSizes map[string]int64, dirStats map[string]*DirStat, userStats map[string]*UserStat, groupStats map[string]*GroupStat, bytesFlag bool, sizeWidthOverride, filesWidthOverride int) (map[string]string, map[string]string, map[string]string, int, int) {
+func ComputeSizeMapsAndWidths(dirSizes map[string]int64, dirStats, userStats, groupStats StatMap, bytesFlag bool,
+	sizeWidthOverride, filesWidthOverride int) (map[string]string, map[string]string, map[string]string, int, int) {
 	sizeStrMap := make(map[string]string, len(dirSizes))
 	maxSizeWidth := 0
 	maxFilesWidth := 0

@@ -22,20 +22,12 @@ var version = "dev"
 var commit = "none"
 var date = "unknown"
 
-type DirStat struct {
+type Stat struct {
 	Size  int64
 	Files int64
 }
 
-type UserStat struct {
-	Size  int64
-	Files int64
-}
-
-type GroupStat struct {
-	Size  int64
-	Files int64
-}
+type StatMap map[string]*Stat
 
 func humanizeBytes(s int64) string {
 	if s < 0 {
@@ -59,7 +51,10 @@ func humanizeBytes(s int64) string {
 // ComputeSizeMapsAndWidths is defined in format.go; helper removed here.
 
 // printTree renders the directory tree and per-user/group summaries.
-func printTree(rootAbs string, children map[string][]string, dirStats map[string]*DirStat, userStats map[string]*UserStat, groupStats map[string]*GroupStat, sizeStrMap, userSizeStr, groupSizeStr map[string]string, maxSizeWidth, maxFilesWidth int, levels int, showFiles, showUser, showGroup, bytesFlag bool, topN int, readMode bool, readOwners, readGroups map[string]string) {
+func printTree(rootAbs string, children map[string][]string, dirStats map[string]*Stat, userStats map[string]*Stat,
+	groupStats map[string]*Stat, sizeStrMap, userSizeStr, groupSizeStr map[string]string, maxSizeWidth,
+	maxFilesWidth int, levels int, showFiles, showUser, showGroup, bytesFlag bool, topN int, readMode bool,
+	readOwners, readGroups map[string]string) {
 	// copy dirSizes from dirStats
 	dirSizes := make(map[string]int64, len(dirStats))
 	for k, v := range dirStats {
@@ -81,7 +76,7 @@ func printTree(rootAbs string, children map[string][]string, dirStats map[string
 	}
 
 	// printing header
-	headerCols := []interface{}{}
+	var headerCols []any
 	headerFmt := fmt.Sprintf("%%%ds", maxSizeWidth)
 	headerCols = append(headerCols, "Size")
 	if showFiles {
@@ -216,7 +211,7 @@ func printTree(rootAbs string, children map[string][]string, dirStats map[string
 	}
 
 	if _, ok := dirStats["."]; !ok {
-		dirStats["."] = &DirStat{}
+		dirStats["."] = &Stat{}
 	}
 
 	printDirRec(".", 0, "", true)
@@ -284,7 +279,7 @@ func printTree(rootAbs string, children map[string][]string, dirStats map[string
 }
 
 // buildChildrenAndSizes builds the children map and dirSizes map from dirStats.
-func buildChildrenAndSizes(dirStats map[string]*DirStat) (map[string][]string, map[string]int64) {
+func buildChildrenAndSizes(dirStats map[string]*Stat) (map[string][]string, map[string]int64) {
 	children := make(map[string][]string)
 	for p := range dirStats {
 		if p == "." {
@@ -308,49 +303,15 @@ func buildChildrenAndSizes(dirStats map[string]*DirStat) (map[string][]string, m
 }
 
 func main() {
-	var (
-		levels      = flag.Int("levels", 2, "number of directory levels to display (0 means only root)")
-		showUser    = flag.Bool("user", false, "show directory owner user")
-		showGroup   = flag.Bool("group", false, "show directory owner group")
-		showFiles   = flag.Bool("files", false, "show number of files per directory")
-		root        = flag.String("root", ".", "root path to analyze (can also be specified as first positional argument)")
-		concurrency = flag.Int("concurrency", runtime.NumCPU()*2, "number of concurrent directory readers")
-		bytesFlag   = flag.Bool("bytes", false, "print sizes in bytes instead of human-readable units")
-		sizeWidth   = flag.Int("size-width", 0, "override size column width (0 = auto-fit)")
-		filesWidth  = flag.Int("files-width", 0, "override files column width (0 = auto-fit)")
-		topN        = flag.Int("top", 0, "limit per-user/group lists to top N by size (0 = all)")
-		jsonOut     = flag.String("json", "", "write JSON summary to file (or '-' for stdout)")
-		readJSON    = flag.String("read-json", "", "read JSON summary from file and print human tree (skips scanning)")
-		versionFlag = flag.Bool("version", false, "show version and exit")
-	)
-
-	// Custom usage text: show flags and emphasize that options must come before the positional root arg.
-	flag.Usage = func() {
-		_, _ = fmt.Fprintf(os.Stderr, "Usage: %s [options] <root>\n\n", os.Args[0])
-		_, _ = fmt.Fprintln(os.Stderr, "Options:")
-		flag.PrintDefaults()
-		_, _ = fmt.Fprintln(os.Stderr, "\nNote: flags (options) must be specified before the positional <root> argument.")
-		_, _ = fmt.Fprintln(os.Stderr, "Example:")
-		_, _ = fmt.Fprintf(os.Stderr, "  %s -levels 3 -files -user -group -bytes /path/to/dir\n", os.Args[0])
-	}
-
-	flag.Parse()
-
-	// If user asked for help via -h or --help anywhere, print usage and exit.
-	for _, a := range os.Args[1:] {
-		if a == "-h" || a == "--help" {
-			flag.Usage()
-			return
-		}
-	}
+	cfg := GetConfig()
 
 	// Shared variables for scanning and read-json mode
 	var (
 		rootAbs       string
 		children      map[string][]string
-		dirStats      map[string]*DirStat
-		userStats     map[string]*UserStat
-		groupStats    map[string]*GroupStat
+		dirStats      StatMap
+		userStats     StatMap
+		groupStats    StatMap
 		dirSizes      map[string]int64
 		sizeStrMap    map[string]string
 		userSizeStr   map[string]string
@@ -362,26 +323,18 @@ func main() {
 		readGroups    map[string]string
 	)
 
-	// If user asked for version, print and exit
-	if *versionFlag {
-		fmt.Println("Version: ", version)
-		fmt.Println("Commit:  ", commit)
-		fmt.Println("Date:    ", date)
-		return
-	}
-
 	// If read-json was provided, load file and prepare data structures for printing, then jump to printing
-	if *readJSON != "" {
+	if cfg.ReadJson != "" {
 		// read JSON (allow '-' for stdin)
-		jo, err := LoadSummary(*readJSON)
+		jo, err := LoadSummary(cfg.ReadJson)
 		if err != nil {
 			log.Fatalf("failed to load json: %v", err)
 		}
 
 		// build maps from jo
-		dirStats = make(map[string]*DirStat)
-		userStats = make(map[string]*UserStat)
-		groupStats = make(map[string]*GroupStat)
+		dirStats = make(StatMap)
+		userStats = make(StatMap)
+		groupStats = make(StatMap)
 		ownerByRel := make(map[string]string)
 		groupByRel := make(map[string]string)
 
@@ -390,16 +343,16 @@ func main() {
 			if rel == "" {
 				rel = "."
 			}
-			dirStats[rel] = &DirStat{Size: d.Size, Files: d.Files}
+			dirStats[rel] = &Stat{Size: d.Size, Files: d.Files}
 			ownerByRel[rel] = d.User
 			groupByRel[rel] = d.Group
 		}
 
 		for _, u := range jo.Users {
-			userStats[u.Name] = &UserStat{Size: u.Size, Files: u.Files}
+			userStats[u.Name] = &Stat{Size: u.Size, Files: u.Files}
 		}
 		for _, g := range jo.Grps {
-			groupStats[g.Name] = &GroupStat{Size: g.Size, Files: g.Files}
+			groupStats[g.Name] = &Stat{Size: g.Size, Files: g.Files}
 		}
 
 		if jo.Root != "" {
@@ -409,23 +362,26 @@ func main() {
 		}
 
 		children, dirSizes = buildChildrenAndSizes(dirStats)
-		sizeStrMap, userSizeStr, groupSizeStr, maxSizeWidth, maxFilesWidth = ComputeSizeMapsAndWidths(dirSizes, dirStats, userStats, groupStats, *bytesFlag, *sizeWidth, *filesWidth)
+		sizeStrMap, userSizeStr, groupSizeStr, maxSizeWidth, maxFilesWidth = ComputeSizeMapsAndWidths(dirSizes, dirStats,
+			userStats, groupStats, cfg.BytesFlag, cfg.SizeWidth, cfg.FilesWidth)
 		readMode = true
 		readOwners = ownerByRel
 		readGroups = groupByRel
-		printTree(rootAbs, children, dirStats, userStats, groupStats, sizeStrMap, userSizeStr, groupSizeStr, maxSizeWidth, maxFilesWidth, *levels, *showFiles, *showUser, *showGroup, *bytesFlag, *topN, readMode, readOwners, readGroups)
+		printTree(rootAbs, children, dirStats, userStats, groupStats, sizeStrMap, userSizeStr, groupSizeStr,
+			maxSizeWidth, maxFilesWidth, cfg.Levels, cfg.ShowFiles, cfg.ShowUser, cfg.ShowGroup, cfg.BytesFlag,
+			cfg.TopN, readMode, readOwners, readGroups)
 		return
 	}
 
 	// If a positional argument is provided, use it as the root (allows `./diskusage <path>`)
 	if flag.NArg() > 0 {
 		// take first positional argument as root
-		*root = flag.Arg(0)
+		cfg.Root = flag.Arg(0)
 	}
 
 	// Note: options must come before the positional root argument. Do not accept flags after the path.
 
-	rootAbs, err := filepath.Abs(*root)
+	rootAbs, err := filepath.Abs(cfg.Root)
 	if err != nil {
 		log.Fatalf("failed to resolve root path: %v", err)
 	}
@@ -439,20 +395,18 @@ func main() {
 	runtime.ReadMemStats(&msStart)
 
 	// channel of file paths to process and worker waitgroup
-	filesToProcess := make(chan string, *concurrency*8)
+	filesToProcess := make(chan string, cfg.Concurrency*8)
 	var workerWg sync.WaitGroup
 
 	// Stats maps with mutex
 	var mu sync.Mutex
-	dirStats = make(map[string]*DirStat) // key: relative path to root (".")
-	userStats = make(map[string]*UserStat)
-	groupStats = make(map[string]*GroupStat)
+	dirStats = make(StatMap) // key: relative path to root (".")
+	userStats = make(StatMap)
+	groupStats = make(StatMap)
 
 	// start workers that stat files and aggregate directly
-	for i := 0; i < *concurrency; i++ {
-		workerWg.Add(1)
-		go func() {
-			defer workerWg.Done()
+	for i := 0; i < cfg.Concurrency; i++ {
+		workerWg.Go(func() {
 			for path := range filesToProcess {
 				info, err := os.Lstat(path)
 				if err != nil {
@@ -482,7 +436,7 @@ func main() {
 				p := rel
 				for {
 					if _, ok := dirStats[p]; !ok {
-						dirStats[p] = &DirStat{}
+						dirStats[p] = &Stat{}
 					}
 					dirStats[p].Size += size
 					dirStats[p].Files += 1
@@ -506,23 +460,23 @@ func main() {
 					gname = gidStr
 				}
 				if _, ok := userStats[uname]; !ok {
-					userStats[uname] = &UserStat{}
+					userStats[uname] = &Stat{}
 				}
 				userStats[uname].Size += size
 				userStats[uname].Files += 1
 				if _, ok := groupStats[gname]; !ok {
-					groupStats[gname] = &GroupStat{}
+					groupStats[gname] = &Stat{}
 				}
 				groupStats[gname].Size += size
 				groupStats[gname].Files += 1
 				mu.Unlock()
 			}
-		}()
+		})
 	}
 
 	// atomic counters for scanned items
-	var filesScanned int64
-	var dirsScanned int64
+	var filesScanned atomic.Int64
+	var dirsScanned atomic.Int64
 
 	// Walk directory tree in main goroutine and push file paths into filesToProcess
 	err = filepath.WalkDir(rootAbs, func(path string, d fs.DirEntry, err error) error {
@@ -531,10 +485,10 @@ func main() {
 			return nil
 		}
 		if d.IsDir() {
-			atomic.AddInt64(&dirsScanned, 1)
+			dirsScanned.Add(1)
 			return nil
 		}
-		atomic.AddInt64(&filesScanned, 1)
+		filesScanned.Add(1)
 		filesToProcess <- path
 		return nil
 	})
@@ -552,20 +506,22 @@ func main() {
 	mu.Unlock()
 
 	// compute size strings and widths using helper (testable)
-	sizeStrMap, userSizeStr, groupSizeStr, maxSizeWidth, maxFilesWidth = ComputeSizeMapsAndWidths(dirSizes, dirStats, userStats, groupStats, *bytesFlag, *sizeWidth, *filesWidth)
+	sizeStrMap, userSizeStr, groupSizeStr, maxSizeWidth, maxFilesWidth = ComputeSizeMapsAndWidths(dirSizes, dirStats,
+		userStats, groupStats, cfg.BytesFlag, cfg.SizeWidth, cfg.FilesWidth)
 
 	// If JSON output requested, build JSON structure and write it before human output
-	if *jsonOut != "" {
+	if cfg.JsonOut != "" {
 		// compute ended/ runtime now
 		endedAt := time.Now()
-		b, err := MarshalSummary(rootAbs, dirStats, userStats, groupStats, startedAt, endedAt, msStart, atomic.LoadInt64(&dirsScanned), atomic.LoadInt64(&filesScanned), version)
+		b, err := MarshalSummary(rootAbs, dirStats, userStats, groupStats, startedAt, endedAt, msStart,
+			dirsScanned.Load(), filesScanned.Load(), version)
 		if err != nil {
 			log.Fatalf("failed to build json: %v", err)
 		}
-		if *jsonOut == "-" {
+		if cfg.JsonOut == "-" {
 			fmt.Println(string(b))
 		} else {
-			if err := os.WriteFile(*jsonOut, b, 0644); err != nil {
+			if err := os.WriteFile(cfg.JsonOut, b, 0644); err != nil {
 				log.Fatalf("failed to write json file: %v", err)
 			}
 		}
@@ -573,6 +529,8 @@ func main() {
 	}
 
 	// print tree and summaries
-	printTree(rootAbs, children, dirStats, userStats, groupStats, sizeStrMap, userSizeStr, groupSizeStr, maxSizeWidth, maxFilesWidth, *levels, *showFiles, *showUser, *showGroup, *bytesFlag, *topN, readMode, readOwners, readGroups)
+	printTree(rootAbs, children, dirStats, userStats, groupStats, sizeStrMap, userSizeStr, groupSizeStr, maxSizeWidth,
+		maxFilesWidth, cfg.Levels, cfg.ShowFiles, cfg.ShowUser, cfg.ShowGroup, cfg.BytesFlag, cfg.TopN, readMode,
+		readOwners, readGroups)
 	return
 }
