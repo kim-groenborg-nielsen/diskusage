@@ -8,18 +8,20 @@ import (
 )
 
 type Config struct {
-	Levels      int
-	ShowUser    bool
-	ShowGroup   bool
-	ShowFiles   bool
 	Root        string
+	JsonOut     string
+	ReadJson    string
+	Environment string
+	Profile     string
+	Levels      int
 	Concurrency int
-	BytesFlag   bool
 	SizeWidth   int
 	FilesWidth  int
 	TopN        int
-	JsonOut     string
-	ReadJson    string
+	ShowUser    bool
+	ShowGroup   bool
+	ShowFiles   bool
+	BytesFlag   bool
 	VersionFlag bool
 }
 
@@ -44,6 +46,8 @@ func GetConfig() *Config {
 		JsonOut:     "",
 		ReadJson:    "",
 		VersionFlag: false,
+		Environment: os.Getenv("ENVIRONMENT"),
+		Profile:     os.Getenv("PROFILE"),
 	}
 
 	flag.IntVar(&cachedConfig.Levels, "levels", cachedConfig.Levels, "number of directory levels to display (0 means only root)")

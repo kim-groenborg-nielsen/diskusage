@@ -18,12 +18,12 @@ import (
 type JsonDir struct {
 	Path  string `json:"path"`
 	Rel   string `json:"rel"`
+	User  string `json:"user,omitempty"`
+	Group string `json:"group,omitempty"`
 	Size  int64  `json:"size"`
 	Files int64  `json:"files"`
 	UID   uint32 `json:"uid,omitempty"`
-	User  string `json:"user,omitempty"`
 	GID   uint32 `json:"gid,omitempty"`
-	Group string `json:"group,omitempty"`
 }
 
 type JsonUser struct {

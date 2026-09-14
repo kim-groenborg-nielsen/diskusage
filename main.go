@@ -9,6 +9,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"runtime/pprof"
 	"sort"
 	"strconv"
 	"sync"
@@ -304,6 +305,21 @@ func buildChildrenAndSizes(dirStats map[string]*Stat) (map[string][]string, map[
 
 func main() {
 	cfg := GetConfig()
+
+	if cfg.Environment == "development" && cfg.Profile != "" {
+		f, err := os.Create(cfg.Profile)
+		if err != nil {
+			log.Fatalf("failed to create profile file: %v", err)
+		}
+		defer func() {
+			_ = f.Close()
+		}()
+		err = pprof.StartCPUProfile(f)
+		if err != nil {
+			log.Fatalf("failed to start CPU profile: %v", err)
+		}
+		defer pprof.StopCPUProfile()
+	}
 
 	// Shared variables for scanning and read-json mode
 	var (
