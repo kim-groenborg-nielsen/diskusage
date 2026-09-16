@@ -267,6 +267,12 @@ func main() {
 
 	// Walk directory tree in main goroutine and push file paths into filesToProcess
 	err = filepath.WalkDir(rootAbs, func(path string, d fs.DirEntry, err error) error {
+		// Let walkdir handle d.info()
+		// for files do:   info, err := d.Info()   if err==nil {     if st, ok := info.Sys().(syscall.Stat_t); ok { send fileJob{filepath.Dir(path), info.Size(), st.Uid, st.Gid} to channel }   }
+		//•
+		//Worker consumes fileJob (no os.Lstat call), aggregates sizes.
+		// And cache user.LookupId/LookupGroupId in sync.Map to avoid repeated lookups for same uid/gid.
+
 		if err != nil {
 			// skip unreadable entries
 			return nil
