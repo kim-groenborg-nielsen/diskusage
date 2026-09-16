@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -90,7 +89,8 @@ type JsonOut struct {
 
 // StreamSummary writes the JSON summary directly to an io.Writer. It's safe to pass a gzip.Writer
 // as the writer so the JSON is streamed into compressed output without creating a large []byte.
-func StreamSummary(w io.Writer, rootAbs string, dirStats map[string]*DirStat, userStats map[string]*UserStat, groupStats map[string]*GroupStat, startedAt, endedAt time.Time, msStart runtime.MemStats, dirsScanned, filesScanned int64, version string) error {
+func StreamSummary(w io.Writer, rootAbs string, dirStats, userStats, groupStats StatMap, startedAt, endedAt time.Time,
+	msStart runtime.MemStats, dirsScanned, filesScanned int64, version string) error {
 	// collect memory stats
 	var ms runtime.MemStats
 	runtime.ReadMemStats(&ms)
@@ -341,13 +341,14 @@ func indentString(s string, n int) string {
 }
 
 // MarshalSummary builds a JsonOut from runtime data and returns pretty-printed JSON bytes.
-func MarshalSummary(rootAbs string, dirStats map[string]*DirStat, userStats map[string]*UserStat, groupStats map[string]*GroupStat, startedAt, endedAt time.Time, msStart runtime.MemStats, dirsScanned, filesScanned int64, version string) ([]byte, error) {
+func MarshalSummary(rootAbs string, dirStats, userStats, groupStats StatMap, startedAt, endedAt time.Time,
+	msStart runtime.MemStats, dirsScanned, filesScanned int64, version string) ([]byte, error) {
 	// For backward compatibility we still construct the bytes via StreamSummary into a buffer.
 	var buf bytes.Buffer
 	if err := StreamSummary(&buf, rootAbs, dirStats, userStats, groupStats, startedAt, endedAt, msStart, dirsScanned, filesScanned, version); err != nil {
 		return nil, err
 	}
-	return ioutil.ReadAll(&buf)
+	return io.ReadAll(&buf)
 }
 
 // LoadSummary reads JSON summary from path (use "-" for stdin) and returns the parsed JsonOut.
@@ -366,7 +367,9 @@ func LoadSummary(path string) (JsonOut, error) {
 		if err != nil {
 			return jo, err
 		}
-		defer f.Close()
+		defer func(f *os.File) {
+			_ = f.Close()
+		}(f)
 		r = f
 	}
 	bufr := bufio.NewReader(r)
@@ -381,7 +384,9 @@ func LoadSummary(path string) (JsonOut, error) {
 		if err != nil {
 			return jo, fmt.Errorf("gzip reader: %w", err)
 		}
-		defer gr.Close()
+		defer func(gr *gzip.Reader) {
+			_ = gr.Close()
+		}(gr)
 		dec := json.NewDecoder(gr)
 		if err := dec.Decode(&jo); err != nil {
 			return jo, err

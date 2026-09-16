@@ -38,12 +38,12 @@ func TestStreamSummaryGzip(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	dirStats := map[string]*DirStat{
+	dirStats := StatMap{
 		".":   {Size: 1000, Files: 2},
 		"sub": {Size: 500, Files: 1},
 	}
-	userStats := map[string]*UserStat{"u1": {Size: 1500, Files: 3}}
-	groupStats := map[string]*GroupStat{"g1": {Size: 1500, Files: 3}}
+	userStats := StatMap{"u1": {Size: 1500, Files: 3}}
+	groupStats := StatMap{"g1": {Size: 1500, Files: 3}}
 
 	started := time.Now()
 	ended := started.Add(10 * time.Millisecond)
@@ -66,7 +66,9 @@ func TestStreamSummaryGzip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gzip new reader: %v", err)
 	}
-	defer gr.Close()
+	defer func(gr *gzip.Reader) {
+		_ = gr.Close()
+	}(gr)
 	out, err := io.ReadAll(gr)
 	if err != nil {
 		t.Fatalf("read gzipped content: %v", err)
@@ -91,12 +93,12 @@ func TestStreamSummaryGzipToFileAndLoad(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	dirStats := map[string]*DirStat{
+	dirStats := StatMap{
 		".":   {Size: 1000, Files: 2},
 		"sub": {Size: 500, Files: 1},
 	}
-	userStats := map[string]*UserStat{"u1": {Size: 1500, Files: 3}}
-	groupStats := map[string]*GroupStat{"g1": {Size: 1500, Files: 3}}
+	userStats := StatMap{"u1": {Size: 1500, Files: 3}}
+	groupStats := StatMap{"g1": {Size: 1500, Files: 3}}
 
 	started := time.Now()
 	ended := started.Add(10 * time.Millisecond)
@@ -110,12 +112,12 @@ func TestStreamSummaryGzipToFileAndLoad(t *testing.T) {
 	}
 	gw := gzip.NewWriter(f)
 	if err := StreamSummary(gw, root, dirStats, userStats, groupStats, started, ended, msStart, 2, 3, "v0.1.0"); err != nil {
-		gw.Close()
-		f.Close()
+		_ = gw.Close()
+		_ = f.Close()
 		t.Fatalf("StreamSummary error: %v", err)
 	}
 	if err := gw.Close(); err != nil {
-		f.Close()
+		_ = f.Close()
 		t.Fatalf("gzip close: %v", err)
 	}
 	if err := f.Close(); err != nil {

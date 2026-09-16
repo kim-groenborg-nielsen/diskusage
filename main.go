@@ -276,7 +276,7 @@ func main() {
 
 	// progress done channel for ticker goroutine; always created to simplify closing
 	done := make(chan struct{})
-	if *progress {
+	if cfg.ProgressFlag {
 		// start progress ticker that prints a concise, human-friendly status line (single-line)
 		go func() {
 			ticker := time.NewTicker(2 * time.Second)
@@ -285,8 +285,10 @@ func main() {
 			for {
 				select {
 				case <-ticker.C:
-					fscnt := atomic.LoadInt64(&filesScanned)
-					dirs := atomic.LoadInt64(&dirsScanned)
+					//fscnt := atomic.LoadInt64(&filesScanned)
+					fscnt := filesScanned.Load()
+					//dirs := atomic.LoadInt64(&dirsScanned)
+					dirs := dirsScanned.Load()
 					var m runtime.MemStats
 					runtime.ReadMemStats(&m)
 					elapsed := time.Since(startedAt)
@@ -338,9 +340,9 @@ func main() {
 	// stop progress ticker and print final progress if progress flag enabled
 	// closing done signals the goroutine to exit; safe to close even if goroutine not started
 	close(done)
-	if *progress {
-		fscnt := atomic.LoadInt64(&filesScanned)
-		dirs := atomic.LoadInt64(&dirsScanned)
+	if cfg.ProgressFlag {
+		fscnt := filesScanned.Load()
+		dirs := dirsScanned.Load()
 		var m runtime.MemStats
 		runtime.ReadMemStats(&m)
 		elapsed := time.Since(startedAt)
@@ -368,19 +370,20 @@ func main() {
 		// compute ended/ runtime now
 		endedAt := time.Now()
 		// enable progress messages inside jsonio when user requested progress
-		ProgressEnabled = *progress
+		ProgressEnabled = cfg.ProgressFlag
 		if ProgressEnabled {
 			progressf("building JSON summary (this may take a moment)")
 		}
 		// If gzip requested, stream directly into gzip.Writer to avoid building large in-memory []byte
-		if *gzipJSON {
-			if *jsonOut == "-" {
+		if cfg.GzipFlag {
+			if cfg.JsonOut == "-" {
 				if ProgressEnabled {
 					progressf("streaming gzipped JSON to stdout (-)")
 				}
 				gw := gzip.NewWriter(os.Stdout)
-				if err := StreamSummary(gw, rootAbs, dirStats, userStats, groupStats, startedAt, endedAt, msStart, atomic.LoadInt64(&dirsScanned), atomic.LoadInt64(&filesScanned), version); err != nil {
-					gw.Close()
+				if err := StreamSummary(gw, rootAbs, dirStats, userStats, groupStats, startedAt, endedAt, msStart,
+					dirsScanned.Load(), filesScanned.Load(), version); err != nil {
+					_ = gw.Close()
 					log.Fatalf("failed to stream gzipped json to stdout: %v", err)
 				}
 				if err := gw.Close(); err != nil {
@@ -390,7 +393,7 @@ func main() {
 					progressf("finished streaming gzipped JSON to stdout")
 				}
 			} else {
-				outPath := addGzExt(*jsonOut)
+				outPath := addGzExt(cfg.JsonOut)
 				if ProgressEnabled {
 					progressf("streaming gzipped JSON to %s", outPath)
 				}
@@ -399,13 +402,14 @@ func main() {
 					log.Fatalf("failed to create output file %s: %v", outPath, err)
 				}
 				gw := gzip.NewWriter(f)
-				if err := StreamSummary(gw, rootAbs, dirStats, userStats, groupStats, startedAt, endedAt, msStart, atomic.LoadInt64(&dirsScanned), atomic.LoadInt64(&filesScanned), version); err != nil {
-					gw.Close()
-					f.Close()
+				if err := StreamSummary(gw, rootAbs, dirStats, userStats, groupStats, startedAt, endedAt, msStart,
+					dirsScanned.Load(), filesScanned.Load(), version); err != nil {
+					_ = gw.Close()
+					_ = f.Close()
 					log.Fatalf("failed to stream gzipped json to %s: %v", outPath, err)
 				}
 				if err := gw.Close(); err != nil {
-					f.Close()
+					_ = f.Close()
 					log.Fatalf("failed to close gzip writer: %v", err)
 				}
 				// stat file for size
@@ -420,11 +424,12 @@ func main() {
 			return
 		}
 		// non-gzip path: build bytes and write (existing behavior)
-		b, err := MarshalSummary(rootAbs, dirStats, userStats, groupStats, startedAt, endedAt, msStart, atomic.LoadInt64(&dirsScanned), atomic.LoadInt64(&filesScanned), version)
+		b, err := MarshalSummary(rootAbs, dirStats, userStats, groupStats, startedAt, endedAt, msStart,
+			dirsScanned.Load(), filesScanned.Load(), version)
 		if err != nil {
 			log.Fatalf("failed to build json: %v", err)
 		}
-		if *jsonOut == "-" {
+		if cfg.JsonOut == "-" {
 			if ProgressEnabled {
 				progressf("writing JSON to stdout (-)")
 			}
@@ -433,7 +438,7 @@ func main() {
 				progressf("finished writing JSON to stdout, %d bytes", len(b))
 			}
 		} else {
-			outPath := *jsonOut
+			outPath := cfg.JsonOut
 			if ProgressEnabled {
 				progressf("writing JSON to %s", outPath)
 			}

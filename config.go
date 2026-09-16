@@ -8,21 +8,23 @@ import (
 )
 
 type Config struct {
-	Root        string
-	JsonOut     string
-	ReadJson    string
-	Environment string
-	Profile     string
-	Levels      int
-	Concurrency int
-	SizeWidth   int
-	FilesWidth  int
-	TopN        int
-	ShowUser    bool
-	ShowGroup   bool
-	ShowFiles   bool
-	BytesFlag   bool
-	VersionFlag bool
+	Root         string
+	JsonOut      string
+	ReadJson     string
+	Environment  string
+	Profile      string
+	Levels       int
+	Concurrency  int
+	SizeWidth    int
+	FilesWidth   int
+	TopN         int
+	ShowUser     bool
+	ShowGroup    bool
+	ShowFiles    bool
+	BytesFlag    bool
+	VersionFlag  bool
+	ProgressFlag bool
+	GzipFlag     bool
 }
 
 var cachedConfig *Config
@@ -33,21 +35,23 @@ func GetConfig() *Config {
 	}
 
 	cachedConfig = &Config{
-		Levels:      2,
-		ShowUser:    false,
-		ShowGroup:   false,
-		ShowFiles:   false,
-		Root:        ".",
-		Concurrency: runtime.NumCPU() * 2,
-		BytesFlag:   false,
-		SizeWidth:   0,
-		FilesWidth:  0,
-		TopN:        0,
-		JsonOut:     "",
-		ReadJson:    "",
-		VersionFlag: false,
-		Environment: os.Getenv("ENVIRONMENT"),
-		Profile:     os.Getenv("PROFILE"),
+		Levels:       2,
+		ShowUser:     false,
+		ShowGroup:    false,
+		ShowFiles:    false,
+		Root:         ".",
+		Concurrency:  runtime.NumCPU() * 2,
+		BytesFlag:    false,
+		SizeWidth:    0,
+		FilesWidth:   0,
+		TopN:         0,
+		JsonOut:      "",
+		ReadJson:     "",
+		VersionFlag:  false,
+		ProgressFlag: false,
+		GzipFlag:     false,
+		Environment:  os.Getenv("ENVIRONMENT"),
+		Profile:      os.Getenv("PROFILE"),
 	}
 
 	flag.IntVar(&cachedConfig.Levels, "levels", cachedConfig.Levels, "number of directory levels to display (0 means only root)")
@@ -62,6 +66,8 @@ func GetConfig() *Config {
 	flag.IntVar(&cachedConfig.TopN, "top", cachedConfig.TopN, "limit per-user/group list to top N entries (0 = no limit)")
 	flag.StringVar(&cachedConfig.JsonOut, "json", cachedConfig.JsonOut, "write JSON summary to file or '-' for stdout")
 	flag.StringVar(&cachedConfig.ReadJson, "read-json", cachedConfig.ReadJson, "read JSON summary from file and print it (no directory scanning)")
+	flag.BoolVar(&cachedConfig.ProgressFlag, "progress", cachedConfig.ProgressFlag, "show progress")
+	flag.BoolVar(&cachedConfig.GzipFlag, "gzip", cachedConfig.GzipFlag, "compress JSON output with gzip")
 	flag.BoolFunc("version", "show version and exit", func(string) error {
 		println("Version: ", version)
 		println("Commit:  ", commit)
