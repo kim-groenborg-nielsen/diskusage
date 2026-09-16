@@ -31,6 +31,37 @@ type Stat struct {
 
 type StatMap map[string]*Stat
 
+type fileJob struct {
+	path string
+	size int64
+	uid  uint64
+	gid  uint64
+}
+
+var uidMap sync.Map // key: uid uint64, value: username string
+var gidMap sync.Map // key: gid uint64, value: groupname string
+
+func lookupId(idMap *sync.Map, id uint64, lookupFunc func(string) (any, error)) string {
+	value, ok := idMap.Load(id)
+	if ok {
+		return value.(string)
+	}
+	idStr := strconv.FormatUint(id, 10)
+	if u, err := lookupFunc(idStr); err == nil {
+		name := ""
+		switch v := u.(type) {
+		case *user.User:
+			name = v.Username
+		case *user.Group:
+			name = v.Name
+		}
+		idMap.Store(id, name)
+		return name
+	}
+	idMap.Store(id, idStr)
+	return idStr
+}
+
 func humanizeBytes(s int64) string {
 	if s < 0 {
 		return "-"
@@ -191,7 +222,7 @@ func main() {
 	runtime.ReadMemStats(&msStart)
 
 	// channel of file paths to process and worker waitgroup
-	filesToProcess := make(chan string, cfg.Concurrency*8)
+	filesToProcess := make(chan fileJob, cfg.Concurrency*8)
 	var workerWg sync.WaitGroup
 
 	// Stats maps with mutex
@@ -203,22 +234,9 @@ func main() {
 	// start workers that stat files and aggregate directly
 	for i := 0; i < cfg.Concurrency; i++ {
 		workerWg.Go(func() {
-			for path := range filesToProcess {
-				info, err := os.Lstat(path)
-				if err != nil {
-					continue
-				}
-				// get size and owner
-				size := info.Size()
-				var uid uint32
-				var gid uint32
-				if st, ok := info.Sys().(*syscall.Stat_t); ok {
-					uid = st.Uid
-					gid = st.Gid
-				}
-
+			for job := range filesToProcess {
 				// compute relative directory path
-				fileDir := filepath.Dir(path)
+				fileDir := filepath.Dir(job.path)
 				rel, err := filepath.Rel(rootAbs, fileDir)
 				if err != nil {
 					rel = fileDir
@@ -234,7 +252,7 @@ func main() {
 					if _, ok := dirStats[p]; !ok {
 						dirStats[p] = &Stat{}
 					}
-					dirStats[p].Size += size
+					dirStats[p].Size += job.size
 					dirStats[p].Files += 1
 					if p == "." {
 						break
@@ -242,28 +260,23 @@ func main() {
 					p = filepath.Dir(p)
 				}
 
-				uidStr := strconv.FormatUint(uint64(uid), 10)
-				gidStr := strconv.FormatUint(uint64(gid), 10)
 				var uname, gname string
-				if u, err := user.LookupId(uidStr); err == nil {
-					uname = u.Username
-				} else {
-					uname = uidStr
-				}
-				if g, err := user.LookupGroupId(gidStr); err == nil {
-					gname = g.Name
-				} else {
-					gname = gidStr
-				}
+				uname = lookupId(&uidMap, job.uid, func(uidStr string) (any, error) {
+					return user.LookupId(uidStr)
+				})
+				gname = lookupId(&gidMap, job.gid, func(gidStr string) (any, error) {
+					return user.LookupGroupId(gidStr)
+				})
+
 				if _, ok := userStats[uname]; !ok {
 					userStats[uname] = &Stat{}
 				}
-				userStats[uname].Size += size
+				userStats[uname].Size += job.size
 				userStats[uname].Files += 1
 				if _, ok := groupStats[gname]; !ok {
 					groupStats[gname] = &Stat{}
 				}
-				groupStats[gname].Size += size
+				groupStats[gname].Size += job.size
 				groupStats[gname].Files += 1
 				mu.Unlock()
 			}
@@ -298,7 +311,8 @@ func main() {
 					lastFiles = fscnt
 					// single-line status (overwrites itself); avoid printing goroutine count or delta
 					memStr := humanizeBytes(int64(m.Alloc))
-					status := fmt.Sprintf("files=%d | %.1f/s | dirs=%d | mem=%s | %s", fscnt, rate, dirs, memStr, formatDurationShort(elapsed))
+					status := fmt.Sprintf("files=%d | %.1f/s | dirs=%d | mem=%s | %s", fscnt, rate, dirs,
+						memStr, formatDurationShort(elapsed))
 					// pad with spaces to clear previous content and use \r to overwrite
 					_, _ = fmt.Fprintf(os.Stderr, "\r%s", status+"                                        ")
 				case <-done:
@@ -326,7 +340,14 @@ func main() {
 			return nil
 		}
 		filesScanned.Add(1)
-		filesToProcess <- path
+		info, err := d.Info()
+		if err == nil {
+			if st, ok := info.Sys().(*syscall.Stat_t); ok {
+				// send fileJob to channel
+				filesToProcess <- fileJob{path: path, size: info.Size(), uid: uint64(st.Uid), gid: uint64(st.Gid)}
+			}
+		}
+		//filesToProcess <- path
 		return nil
 	})
 	if err != nil {
@@ -352,7 +373,8 @@ func main() {
 		}
 		// final summary printed on its own line, overwrite previous progress with \r
 		memStr := humanizeBytes(int64(m.Alloc))
-		final := fmt.Sprintf("final: files=%d avg=%.1f/s dirs=%d mem=%s elapsed=%s", fscnt, avg, dirs, memStr, formatDurationShort(elapsed))
+		final := fmt.Sprintf("final: files=%d avg=%.1f/s dirs=%d mem=%s elapsed=%s", fscnt, avg, dirs,
+			memStr, formatDurationShort(elapsed))
 		_, _ = fmt.Fprintf(os.Stderr, "\r%s\n", final)
 	}
 
