@@ -1,6 +1,7 @@
 package main
 
 import (
+	"compress/gzip"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -9,8 +10,9 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"runtime/pprof"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -22,19 +24,42 @@ var version = "dev"
 var commit = "none"
 var date = "unknown"
 
-type DirStat struct {
+type Stat struct {
 	Size  int64
 	Files int64
 }
 
-type UserStat struct {
-	Size  int64
-	Files int64
+type StatMap map[string]*Stat
+
+type fileJob struct {
+	path string
+	size int64
+	uid  uint64
+	gid  uint64
 }
 
-type GroupStat struct {
-	Size  int64
-	Files int64
+var uidMap sync.Map // key: uid uint64, value: username string
+var gidMap sync.Map // key: gid uint64, value: groupname string
+
+func lookupId(idMap *sync.Map, id uint64, lookupFunc func(string) (any, error)) string {
+	value, ok := idMap.Load(id)
+	if ok {
+		return value.(string)
+	}
+	idStr := strconv.FormatUint(id, 10)
+	if u, err := lookupFunc(idStr); err == nil {
+		name := ""
+		switch v := u.(type) {
+		case *user.User:
+			name = v.Username
+		case *user.Group:
+			name = v.Name
+		}
+		idMap.Store(id, name)
+		return name
+	}
+	idMap.Store(id, idStr)
+	return idStr
 }
 
 func humanizeBytes(s int64) string {
@@ -58,233 +83,8 @@ func humanizeBytes(s int64) string {
 
 // ComputeSizeMapsAndWidths is defined in format.go; helper removed here.
 
-// printTree renders the directory tree and per-user/group summaries.
-func printTree(rootAbs string, children map[string][]string, dirStats map[string]*DirStat, userStats map[string]*UserStat, groupStats map[string]*GroupStat, sizeStrMap, userSizeStr, groupSizeStr map[string]string, maxSizeWidth, maxFilesWidth int, levels int, showFiles, showUser, showGroup, bytesFlag bool, topN int, readMode bool, readOwners, readGroups map[string]string) {
-	// copy dirSizes from dirStats
-	dirSizes := make(map[string]int64, len(dirStats))
-	for k, v := range dirStats {
-		dirSizes[k] = v.Size
-	}
-
-	// sort children lists by descending total size (fallback to name)
-	for k := range children {
-		s := children[k]
-		sort.Slice(s, func(i, j int) bool {
-			si := dirSizes[s[i]]
-			sj := dirSizes[s[j]]
-			if si == sj {
-				return s[i] < s[j]
-			}
-			return si > sj
-		})
-		children[k] = s
-	}
-
-	// printing header
-	headerCols := []interface{}{}
-	headerFmt := fmt.Sprintf("%%%ds", maxSizeWidth)
-	headerCols = append(headerCols, "Size")
-	if showFiles {
-		headerFmt += " %" + strconv.Itoa(maxFilesWidth) + "s"
-		headerCols = append(headerCols, "Files")
-	}
-	if showUser {
-		headerFmt += " %-15s"
-		headerCols = append(headerCols, "User")
-	}
-	if showGroup {
-		headerFmt += " %-15s"
-		headerCols = append(headerCols, "Group")
-	}
-	headerFmt += " %s\n"
-	headerCols = append(headerCols, "Path")
-	fmt.Printf(headerFmt, headerCols...)
-
-	var printDirRec func(pathRel string, curLevel int, prefix string, isLast bool)
-	printDirRec = func(pathRel string, curLevel int, prefix string, isLast bool) {
-		stat := dirStats[pathRel]
-		// size string
-		sizeCombined := "0"
-		if val, ok := sizeStrMap[pathRel]; ok {
-			sizeCombined = val
-		} else if stat != nil {
-			if bytesFlag {
-				sizeCombined = strconv.FormatInt(stat.Size, 10)
-			} else {
-				sizeCombined = humanizeBytes(stat.Size)
-			}
-		}
-		filesStr := ""
-		if showFiles {
-			if stat != nil {
-				filesStr = strconv.FormatInt(stat.Files, 10)
-			} else {
-				filesStr = "0"
-			}
-		}
-
-		userStr := ""
-		groupStr := ""
-		if showUser || showGroup {
-			if readMode {
-				if showUser {
-					if v, ok := readOwners[pathRel]; ok {
-						userStr = v
-					}
-				}
-				if showGroup {
-					if v, ok := readGroups[pathRel]; ok {
-						groupStr = v
-					}
-				}
-			} else {
-				full := rootAbs
-				if pathRel != "." {
-					full = filepath.Join(rootAbs, pathRel)
-				}
-				if info, err := os.Lstat(full); err == nil {
-					if st, ok := info.Sys().(*syscall.Stat_t); ok {
-						uidStr := strconv.FormatUint(uint64(st.Uid), 10)
-						gidStr := strconv.FormatUint(uint64(st.Gid), 10)
-						if showUser {
-							if u, err := user.LookupId(uidStr); err == nil {
-								userStr = u.Username
-							} else {
-								userStr = uidStr
-							}
-						}
-						if showGroup {
-							if g, err := user.LookupGroupId(gidStr); err == nil {
-								groupStr = g.Name
-							} else {
-								groupStr = gidStr
-							}
-						}
-					}
-				}
-			}
-		}
-
-		var name string
-		if curLevel == 0 {
-			name = rootAbs
-		} else {
-			connector := ""
-			if isLast {
-				connector = "└── "
-			} else {
-				connector = "├── "
-			}
-			name = prefix + connector + filepath.Base(pathRel)
-		}
-
-		fmtStr := fmt.Sprintf("%%%ds", maxSizeWidth)
-		args := []interface{}{sizeCombined}
-		if showFiles {
-			fmtStr += " %" + strconv.Itoa(maxFilesWidth) + "s"
-			args = append(args, filesStr)
-		}
-		if showUser {
-			fmtStr += " %-15s"
-			args = append(args, userStr)
-		}
-		if showGroup {
-			fmtStr += " %-15s"
-			args = append(args, groupStr)
-		}
-		fmtStr += " %s\n"
-		args = append(args, name)
-		fmt.Printf(fmtStr, args...)
-
-		if curLevel >= levels {
-			return
-		}
-
-		kids := children[pathRel]
-		for i, k := range kids {
-			last := i == len(kids)-1
-			childPrefix := prefix
-			if curLevel >= 0 {
-				if isLast {
-					childPrefix += "    "
-				} else {
-					childPrefix += "│   "
-				}
-			}
-			printDirRec(k, curLevel+1, childPrefix, last)
-		}
-	}
-
-	if _, ok := dirStats["."]; !ok {
-		dirStats["."] = &DirStat{}
-	}
-
-	printDirRec(".", 0, "", true)
-
-	// per-user summary
-	fmt.Println()
-	fmt.Println("Per-user summary:")
-	userNames := make([]string, 0, len(userStats))
-	for u := range userStats {
-		userNames = append(userNames, u)
-	}
-	sort.Slice(userNames, func(i, j int) bool { return userStats[userNames[i]].Size > userStats[userNames[j]].Size })
-	if topN > 0 && topN < len(userNames) {
-		userNames = userNames[:topN]
-	}
-	for _, u := range userNames {
-		s := userStats[u]
-		// combined user size string
-		sizeCombined := "0"
-		if val, ok := userSizeStr[u]; ok {
-			sizeCombined = val
-		} else if s != nil {
-			if bytesFlag {
-				sizeCombined = strconv.FormatInt(s.Size, 10)
-			} else {
-				sizeCombined = humanizeBytes(s.Size)
-			}
-		}
-		filesCount := int64(0)
-		if s != nil {
-			filesCount = s.Files
-		}
-		fmt.Printf("%-20s %"+strconv.Itoa(maxSizeWidth)+"s %"+strconv.Itoa(maxFilesWidth)+"d files\n", u, sizeCombined, filesCount)
-	}
-
-	// per-group summary
-	fmt.Println()
-	fmt.Println("Per-group summary:")
-	groupNames := make([]string, 0, len(groupStats))
-	for g := range groupStats {
-		groupNames = append(groupNames, g)
-	}
-	sort.Slice(groupNames, func(i, j int) bool { return groupStats[groupNames[i]].Size > groupStats[groupNames[j]].Size })
-	if topN > 0 && topN < len(groupNames) {
-		groupNames = groupNames[:topN]
-	}
-	for _, g := range groupNames {
-		s := groupStats[g]
-		sizeCombined := "0"
-		if val, ok := groupSizeStr[g]; ok {
-			sizeCombined = val
-		} else if s != nil {
-			if bytesFlag {
-				sizeCombined = strconv.FormatInt(s.Size, 10)
-			} else {
-				sizeCombined = humanizeBytes(s.Size)
-			}
-		}
-		filesCount := int64(0)
-		if s != nil {
-			filesCount = s.Files
-		}
-		fmt.Printf("%-20s %"+strconv.Itoa(maxSizeWidth)+"s %"+strconv.Itoa(maxFilesWidth)+"d files\n", g, sizeCombined, filesCount)
-	}
-}
-
 // buildChildrenAndSizes builds the children map and dirSizes map from dirStats.
-func buildChildrenAndSizes(dirStats map[string]*DirStat) (map[string][]string, map[string]int64) {
+func buildChildrenAndSizes(dirStats map[string]*Stat) (map[string][]string, map[string]int64) {
 	children := make(map[string][]string)
 	for p := range dirStats {
 		if p == "." {
@@ -307,50 +107,38 @@ func buildChildrenAndSizes(dirStats map[string]*DirStat) (map[string][]string, m
 	return children, dirSizes
 }
 
-func main() {
-	var (
-		levels      = flag.Int("levels", 2, "number of directory levels to display (0 means only root)")
-		showUser    = flag.Bool("user", false, "show directory owner user")
-		showGroup   = flag.Bool("group", false, "show directory owner group")
-		showFiles   = flag.Bool("files", false, "show number of files per directory")
-		root        = flag.String("root", ".", "root path to analyze (can also be specified as first positional argument)")
-		concurrency = flag.Int("concurrency", runtime.NumCPU()*2, "number of concurrent directory readers")
-		bytesFlag   = flag.Bool("bytes", false, "print sizes in bytes instead of human-readable units")
-		sizeWidth   = flag.Int("size-width", 0, "override size column width (0 = auto-fit)")
-		filesWidth  = flag.Int("files-width", 0, "override files column width (0 = auto-fit)")
-		topN        = flag.Int("top", 0, "limit per-user/group lists to top N by size (0 = all)")
-		jsonOut     = flag.String("json", "", "write JSON summary to file (or '-' for stdout)")
-		readJSON    = flag.String("read-json", "", "read JSON summary from file and print human tree (skips scanning)")
-		versionFlag = flag.Bool("version", false, "show version and exit")
-	)
-
-	// Custom usage text: show flags and emphasize that options must come before the positional root arg.
-	flag.Usage = func() {
-		_, _ = fmt.Fprintf(os.Stderr, "Usage: %s [options] <root>\n\n", os.Args[0])
-		_, _ = fmt.Fprintln(os.Stderr, "Options:")
-		flag.PrintDefaults()
-		_, _ = fmt.Fprintln(os.Stderr, "\nNote: flags (options) must be specified before the positional <root> argument.")
-		_, _ = fmt.Fprintln(os.Stderr, "Example:")
-		_, _ = fmt.Fprintf(os.Stderr, "  %s -levels 3 -files -user -group -bytes /path/to/dir\n", os.Args[0])
+func addGzExt(p string) string {
+	if strings.HasSuffix(strings.ToLower(p), ".gz") {
+		return p
 	}
+	return p + ".gz"
+}
 
-	flag.Parse()
+func main() {
+	cfg := GetConfig()
 
-	// If user asked for help via -h or --help anywhere, print usage and exit.
-	for _, a := range os.Args[1:] {
-		if a == "-h" || a == "--help" {
-			flag.Usage()
-			return
+	if cfg.Environment == "development" && cfg.Profile != "" {
+		f, err := os.Create(cfg.Profile)
+		if err != nil {
+			log.Fatalf("failed to create profile file: %v", err)
 		}
+		defer func() {
+			_ = f.Close()
+		}()
+		err = pprof.StartCPUProfile(f)
+		if err != nil {
+			log.Fatalf("failed to start CPU profile: %v", err)
+		}
+		defer pprof.StopCPUProfile()
 	}
 
 	// Shared variables for scanning and read-json mode
 	var (
 		rootAbs       string
 		children      map[string][]string
-		dirStats      map[string]*DirStat
-		userStats     map[string]*UserStat
-		groupStats    map[string]*GroupStat
+		dirStats      StatMap
+		userStats     StatMap
+		groupStats    StatMap
 		dirSizes      map[string]int64
 		sizeStrMap    map[string]string
 		userSizeStr   map[string]string
@@ -362,26 +150,18 @@ func main() {
 		readGroups    map[string]string
 	)
 
-	// If user asked for version, print and exit
-	if *versionFlag {
-		fmt.Println("Version: ", version)
-		fmt.Println("Commit:  ", commit)
-		fmt.Println("Date:    ", date)
-		return
-	}
-
 	// If read-json was provided, load file and prepare data structures for printing, then jump to printing
-	if *readJSON != "" {
+	if cfg.ReadJson != "" {
 		// read JSON (allow '-' for stdin)
-		jo, err := LoadSummary(*readJSON)
+		jo, err := LoadSummary(cfg.ReadJson)
 		if err != nil {
 			log.Fatalf("failed to load json: %v", err)
 		}
 
 		// build maps from jo
-		dirStats = make(map[string]*DirStat)
-		userStats = make(map[string]*UserStat)
-		groupStats = make(map[string]*GroupStat)
+		dirStats = make(StatMap)
+		userStats = make(StatMap)
+		groupStats = make(StatMap)
 		ownerByRel := make(map[string]string)
 		groupByRel := make(map[string]string)
 
@@ -390,16 +170,16 @@ func main() {
 			if rel == "" {
 				rel = "."
 			}
-			dirStats[rel] = &DirStat{Size: d.Size, Files: d.Files}
+			dirStats[rel] = &Stat{Size: d.Size, Files: d.Files}
 			ownerByRel[rel] = d.User
 			groupByRel[rel] = d.Group
 		}
 
 		for _, u := range jo.Users {
-			userStats[u.Name] = &UserStat{Size: u.Size, Files: u.Files}
+			userStats[u.Name] = &Stat{Size: u.Size, Files: u.Files}
 		}
 		for _, g := range jo.Grps {
-			groupStats[g.Name] = &GroupStat{Size: g.Size, Files: g.Files}
+			groupStats[g.Name] = &Stat{Size: g.Size, Files: g.Files}
 		}
 
 		if jo.Root != "" {
@@ -409,23 +189,26 @@ func main() {
 		}
 
 		children, dirSizes = buildChildrenAndSizes(dirStats)
-		sizeStrMap, userSizeStr, groupSizeStr, maxSizeWidth, maxFilesWidth = ComputeSizeMapsAndWidths(dirSizes, dirStats, userStats, groupStats, *bytesFlag, *sizeWidth, *filesWidth)
+		sizeStrMap, userSizeStr, groupSizeStr, maxSizeWidth, maxFilesWidth = ComputeSizeMapsAndWidths(dirSizes, dirStats,
+			userStats, groupStats, cfg.BytesFlag, cfg.SizeWidth, cfg.FilesWidth)
 		readMode = true
 		readOwners = ownerByRel
 		readGroups = groupByRel
-		printTree(rootAbs, children, dirStats, userStats, groupStats, sizeStrMap, userSizeStr, groupSizeStr, maxSizeWidth, maxFilesWidth, *levels, *showFiles, *showUser, *showGroup, *bytesFlag, *topN, readMode, readOwners, readGroups)
+		printTree(rootAbs, children, dirStats, userStats, groupStats, sizeStrMap, userSizeStr, groupSizeStr,
+			maxSizeWidth, maxFilesWidth, cfg.Levels, cfg.ShowFiles, cfg.ShowUser, cfg.ShowGroup, cfg.BytesFlag,
+			cfg.TopN, readMode, readOwners, readGroups)
 		return
 	}
 
 	// If a positional argument is provided, use it as the root (allows `./diskusage <path>`)
 	if flag.NArg() > 0 {
 		// take first positional argument as root
-		*root = flag.Arg(0)
+		cfg.Root = flag.Arg(0)
 	}
 
 	// Note: options must come before the positional root argument. Do not accept flags after the path.
 
-	rootAbs, err := filepath.Abs(*root)
+	rootAbs, err := filepath.Abs(cfg.Root)
 	if err != nil {
 		log.Fatalf("failed to resolve root path: %v", err)
 	}
@@ -439,36 +222,21 @@ func main() {
 	runtime.ReadMemStats(&msStart)
 
 	// channel of file paths to process and worker waitgroup
-	filesToProcess := make(chan string, *concurrency*8)
+	filesToProcess := make(chan fileJob, cfg.Concurrency*8)
 	var workerWg sync.WaitGroup
 
 	// Stats maps with mutex
 	var mu sync.Mutex
-	dirStats = make(map[string]*DirStat) // key: relative path to root (".")
-	userStats = make(map[string]*UserStat)
-	groupStats = make(map[string]*GroupStat)
+	dirStats = make(StatMap) // key: relative path to root (".")
+	userStats = make(StatMap)
+	groupStats = make(StatMap)
 
 	// start workers that stat files and aggregate directly
-	for i := 0; i < *concurrency; i++ {
-		workerWg.Add(1)
-		go func() {
-			defer workerWg.Done()
-			for path := range filesToProcess {
-				info, err := os.Lstat(path)
-				if err != nil {
-					continue
-				}
-				// get size and owner
-				size := info.Size()
-				var uid uint32
-				var gid uint32
-				if st, ok := info.Sys().(*syscall.Stat_t); ok {
-					uid = st.Uid
-					gid = st.Gid
-				}
-
+	for i := 0; i < cfg.Concurrency; i++ {
+		workerWg.Go(func() {
+			for job := range filesToProcess {
 				// compute relative directory path
-				fileDir := filepath.Dir(path)
+				fileDir := filepath.Dir(job.path)
 				rel, err := filepath.Rel(rootAbs, fileDir)
 				if err != nil {
 					rel = fileDir
@@ -482,9 +250,9 @@ func main() {
 				p := rel
 				for {
 					if _, ok := dirStats[p]; !ok {
-						dirStats[p] = &DirStat{}
+						dirStats[p] = &Stat{}
 					}
-					dirStats[p].Size += size
+					dirStats[p].Size += job.size
 					dirStats[p].Files += 1
 					if p == "." {
 						break
@@ -492,50 +260,94 @@ func main() {
 					p = filepath.Dir(p)
 				}
 
-				uidStr := strconv.FormatUint(uint64(uid), 10)
-				gidStr := strconv.FormatUint(uint64(gid), 10)
 				var uname, gname string
-				if u, err := user.LookupId(uidStr); err == nil {
-					uname = u.Username
-				} else {
-					uname = uidStr
-				}
-				if g, err := user.LookupGroupId(gidStr); err == nil {
-					gname = g.Name
-				} else {
-					gname = gidStr
-				}
+				uname = lookupId(&uidMap, job.uid, func(uidStr string) (any, error) {
+					return user.LookupId(uidStr)
+				})
+				gname = lookupId(&gidMap, job.gid, func(gidStr string) (any, error) {
+					return user.LookupGroupId(gidStr)
+				})
+
 				if _, ok := userStats[uname]; !ok {
-					userStats[uname] = &UserStat{}
+					userStats[uname] = &Stat{}
 				}
-				userStats[uname].Size += size
+				userStats[uname].Size += job.size
 				userStats[uname].Files += 1
 				if _, ok := groupStats[gname]; !ok {
-					groupStats[gname] = &GroupStat{}
+					groupStats[gname] = &Stat{}
 				}
-				groupStats[gname].Size += size
+				groupStats[gname].Size += job.size
 				groupStats[gname].Files += 1
 				mu.Unlock()
+			}
+		})
+	}
+
+	// atomic counters for scanned items
+	var filesScanned atomic.Int64
+	var dirsScanned atomic.Int64
+
+	// progress done channel for ticker goroutine; always created to simplify closing
+	done := make(chan struct{})
+	if cfg.ProgressFlag {
+		// start progress ticker that prints a concise, human-friendly status line (single-line)
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			var lastFiles int64
+			for {
+				select {
+				case <-ticker.C:
+					//fscnt := atomic.LoadInt64(&filesScanned)
+					fscnt := filesScanned.Load()
+					//dirs := atomic.LoadInt64(&dirsScanned)
+					dirs := dirsScanned.Load()
+					var m runtime.MemStats
+					runtime.ReadMemStats(&m)
+					elapsed := time.Since(startedAt)
+					// instant rate over last interval (files per second)
+					intervalSec := 2.0
+					rate := float64(fscnt-lastFiles) / intervalSec
+					lastFiles = fscnt
+					// single-line status (overwrites itself); avoid printing goroutine count or delta
+					memStr := humanizeBytes(int64(m.Alloc))
+					status := fmt.Sprintf("files=%d | %.1f/s | dirs=%d | mem=%s | %s", fscnt, rate, dirs,
+						memStr, formatDurationShort(elapsed))
+					// pad with spaces to clear previous content and use \r to overwrite
+					_, _ = fmt.Fprintf(os.Stderr, "\r%s", status+"                                        ")
+				case <-done:
+					// stop without printing a newline; final will overwrite the line
+					return
+				}
 			}
 		}()
 	}
 
-	// atomic counters for scanned items
-	var filesScanned int64
-	var dirsScanned int64
-
 	// Walk directory tree in main goroutine and push file paths into filesToProcess
 	err = filepath.WalkDir(rootAbs, func(path string, d fs.DirEntry, err error) error {
+		// Let walkdir handle d.info()
+		// for files do:   info, err := d.Info()   if err==nil {     if st, ok := info.Sys().(syscall.Stat_t); ok { send fileJob{filepath.Dir(path), info.Size(), st.Uid, st.Gid} to channel }   }
+		//•
+		//Worker consumes fileJob (no os.Lstat call), aggregates sizes.
+		// And cache user.LookupId/LookupGroupId in sync.Map to avoid repeated lookups for same uid/gid.
+
 		if err != nil {
 			// skip unreadable entries
 			return nil
 		}
 		if d.IsDir() {
-			atomic.AddInt64(&dirsScanned, 1)
+			dirsScanned.Add(1)
 			return nil
 		}
-		atomic.AddInt64(&filesScanned, 1)
-		filesToProcess <- path
+		filesScanned.Add(1)
+		info, err := d.Info()
+		if err == nil {
+			if st, ok := info.Sys().(*syscall.Stat_t); ok {
+				// send fileJob to channel
+				filesToProcess <- fileJob{path: path, size: info.Size(), uid: uint64(st.Uid), gid: uint64(st.Gid)}
+			}
+		}
+		//filesToProcess <- path
 		return nil
 	})
 	if err != nil {
@@ -546,33 +358,138 @@ func main() {
 	close(filesToProcess)
 	workerWg.Wait()
 
+	// stop progress ticker and print final progress if progress flag enabled
+	// closing done signals the goroutine to exit; safe to close even if goroutine not started
+	close(done)
+	if cfg.ProgressFlag {
+		fscnt := filesScanned.Load()
+		dirs := dirsScanned.Load()
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		elapsed := time.Since(startedAt)
+		var avg float64
+		if elapsed.Seconds() > 0 {
+			avg = float64(fscnt) / elapsed.Seconds()
+		}
+		// final summary printed on its own line, overwrite previous progress with \r
+		memStr := humanizeBytes(int64(m.Alloc))
+		final := fmt.Sprintf("final: files=%d avg=%.1f/s dirs=%d mem=%s elapsed=%s", fscnt, avg, dirs,
+			memStr, formatDurationShort(elapsed))
+		_, _ = fmt.Fprintf(os.Stderr, "\r%s\n", final)
+	}
+
 	// Build children map for printing
 	mu.Lock()
 	children, dirSizes = buildChildrenAndSizes(dirStats)
 	mu.Unlock()
 
 	// compute size strings and widths using helper (testable)
-	sizeStrMap, userSizeStr, groupSizeStr, maxSizeWidth, maxFilesWidth = ComputeSizeMapsAndWidths(dirSizes, dirStats, userStats, groupStats, *bytesFlag, *sizeWidth, *filesWidth)
+	sizeStrMap, userSizeStr, groupSizeStr, maxSizeWidth, maxFilesWidth = ComputeSizeMapsAndWidths(dirSizes, dirStats,
+		userStats, groupStats, cfg.BytesFlag, cfg.SizeWidth, cfg.FilesWidth)
 
 	// If JSON output requested, build JSON structure and write it before human output
-	if *jsonOut != "" {
+	if cfg.JsonOut != "" {
 		// compute ended/ runtime now
 		endedAt := time.Now()
-		b, err := MarshalSummary(rootAbs, dirStats, userStats, groupStats, startedAt, endedAt, msStart, atomic.LoadInt64(&dirsScanned), atomic.LoadInt64(&filesScanned), version)
+		// enable progress messages inside jsonio when user requested progress
+		ProgressEnabled = cfg.ProgressFlag
+		if ProgressEnabled {
+			progressf("building JSON summary (this may take a moment)")
+		}
+		// If gzip requested, stream directly into gzip.Writer to avoid building large in-memory []byte
+		if cfg.GzipFlag {
+			if cfg.JsonOut == "-" {
+				if ProgressEnabled {
+					progressf("streaming gzipped JSON to stdout (-)")
+				}
+				gw := gzip.NewWriter(os.Stdout)
+				if err := StreamSummary(gw, rootAbs, dirStats, userStats, groupStats, startedAt, endedAt, msStart,
+					dirsScanned.Load(), filesScanned.Load(), version); err != nil {
+					_ = gw.Close()
+					log.Fatalf("failed to stream gzipped json to stdout: %v", err)
+				}
+				if err := gw.Close(); err != nil {
+					log.Fatalf("failed to close gzip writer: %v", err)
+				}
+				if ProgressEnabled {
+					progressf("finished streaming gzipped JSON to stdout")
+				}
+			} else {
+				outPath := addGzExt(cfg.JsonOut)
+				if ProgressEnabled {
+					progressf("streaming gzipped JSON to %s", outPath)
+				}
+				f, err := os.Create(outPath)
+				if err != nil {
+					log.Fatalf("failed to create output file %s: %v", outPath, err)
+				}
+				gw := gzip.NewWriter(f)
+				if err := StreamSummary(gw, rootAbs, dirStats, userStats, groupStats, startedAt, endedAt, msStart,
+					dirsScanned.Load(), filesScanned.Load(), version); err != nil {
+					_ = gw.Close()
+					_ = f.Close()
+					log.Fatalf("failed to stream gzipped json to %s: %v", outPath, err)
+				}
+				if err := gw.Close(); err != nil {
+					_ = f.Close()
+					log.Fatalf("failed to close gzip writer: %v", err)
+				}
+				// stat file for size
+				st, _ := f.Stat()
+				if err := f.Close(); err != nil {
+					log.Fatalf("failed to close output file: %v", err)
+				}
+				if ProgressEnabled {
+					progressf("finished writing gzipped JSON to %s, %d bytes", outPath, st.Size())
+				}
+			}
+			return
+		}
+		// non-gzip path: build bytes and write (existing behavior)
+		b, err := MarshalSummary(rootAbs, dirStats, userStats, groupStats, startedAt, endedAt, msStart,
+			dirsScanned.Load(), filesScanned.Load(), version)
 		if err != nil {
 			log.Fatalf("failed to build json: %v", err)
 		}
-		if *jsonOut == "-" {
+		if cfg.JsonOut == "-" {
+			if ProgressEnabled {
+				progressf("writing JSON to stdout (-)")
+			}
 			fmt.Println(string(b))
+			if ProgressEnabled {
+				progressf("finished writing JSON to stdout, %d bytes", len(b))
+			}
 		} else {
-			if err := os.WriteFile(*jsonOut, b, 0644); err != nil {
+			outPath := cfg.JsonOut
+			if ProgressEnabled {
+				progressf("writing JSON to %s", outPath)
+			}
+			if err := os.WriteFile(outPath, b, 0644); err != nil {
 				log.Fatalf("failed to write json file: %v", err)
+			}
+			if ProgressEnabled {
+				progressf("finished writing JSON to %s, %d bytes", outPath, len(b))
 			}
 		}
 		return
 	}
 
 	// print tree and summaries
-	printTree(rootAbs, children, dirStats, userStats, groupStats, sizeStrMap, userSizeStr, groupSizeStr, maxSizeWidth, maxFilesWidth, *levels, *showFiles, *showUser, *showGroup, *bytesFlag, *topN, readMode, readOwners, readGroups)
+	printTree(rootAbs, children, dirStats, userStats, groupStats, sizeStrMap, userSizeStr, groupSizeStr, maxSizeWidth,
+		maxFilesWidth, cfg.Levels, cfg.ShowFiles, cfg.ShowUser, cfg.ShowGroup, cfg.BytesFlag, cfg.TopN, readMode,
+		readOwners, readGroups)
 	return
+}
+
+// formatDurationShort returns a compact HH:MM:SS-like string for durations
+func formatDurationShort(d time.Duration) string {
+	s := int(d.Seconds())
+	h := s / 3600
+	s -= h * 3600
+	m := s / 60
+	s -= m * 60
+	if h > 0 {
+		return fmt.Sprintf("%02d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("%02d:%02d", m, s)
 }

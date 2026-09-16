@@ -5,7 +5,8 @@ import "strconv"
 // ComputeSizeMapsAndWidths builds combined size strings (mantissa+unit or raw bytes)
 // for directories, users, and groups and returns maps plus auto-fit widths for
 // the size column and files column.
-func ComputeSizeMapsAndWidths(dirSizes map[string]int64, dirStats map[string]*DirStat, userStats map[string]*UserStat, groupStats map[string]*GroupStat, bytesFlag bool, sizeWidthOverride, filesWidthOverride int) (map[string]string, map[string]string, map[string]string, int, int) {
+func ComputeSizeMapsAndWidths(dirSizes map[string]int64, dirStats, userStats, groupStats StatMap, bytesFlag bool,
+	sizeWidthOverride, filesWidthOverride int) (map[string]string, map[string]string, map[string]string, int, int) {
 	sizeStrMap := make(map[string]string, len(dirSizes))
 	maxSizeWidth := 0
 	maxFilesWidth := 0
@@ -28,37 +29,8 @@ func ComputeSizeMapsAndWidths(dirSizes map[string]int64, dirStats map[string]*Di
 		}
 	}
 
-	userSizeStr := make(map[string]string, len(userStats))
-	for u, us := range userStats {
-		if bytesFlag {
-			userSizeStr[u] = strconv.FormatInt(us.Size, 10)
-		} else {
-			userSizeStr[u] = humanizeBytes(us.Size)
-		}
-		if len(userSizeStr[u]) > maxSizeWidth {
-			maxSizeWidth = len(userSizeStr[u])
-		}
-		fsStr := strconv.FormatInt(us.Files, 10)
-		if len(fsStr) > maxFilesWidth {
-			maxFilesWidth = len(fsStr)
-		}
-	}
-
-	groupSizeStr := make(map[string]string, len(groupStats))
-	for g, gs := range groupStats {
-		if bytesFlag {
-			groupSizeStr[g] = strconv.FormatInt(gs.Size, 10)
-		} else {
-			groupSizeStr[g] = humanizeBytes(gs.Size)
-		}
-		if len(groupSizeStr[g]) > maxSizeWidth {
-			maxSizeWidth = len(groupSizeStr[g])
-		}
-		fsStr := strconv.FormatInt(gs.Files, 10)
-		if len(fsStr) > maxFilesWidth {
-			maxFilesWidth = len(fsStr)
-		}
-	}
+	userSizeStr := statMapToStringMap(userStats, bytesFlag, &maxSizeWidth, &maxFilesWidth)
+	groupSizeStr := statMapToStringMap(groupStats, bytesFlag, &maxSizeWidth, &maxFilesWidth)
 
 	// apply overrides if provided
 	if sizeWidthOverride > 0 {
@@ -76,4 +48,23 @@ func ComputeSizeMapsAndWidths(dirSizes map[string]int64, dirStats map[string]*Di
 	}
 
 	return sizeStrMap, userSizeStr, groupSizeStr, maxSizeWidth, maxFilesWidth
+}
+
+func statMapToStringMap(stats StatMap, bytesFlag bool, maxSizeWidth, maxFilesWidth *int) map[string]string {
+	result := make(map[string]string, len(stats))
+	for k, v := range stats {
+		if bytesFlag {
+			result[k] = strconv.FormatInt(v.Size, 10)
+		} else {
+			result[k] = humanizeBytes(v.Size)
+		}
+		if len(result[k]) > *maxSizeWidth {
+			*maxSizeWidth = len(result[k])
+		}
+		fsStr := strconv.FormatInt(v.Files, 10)
+		if len(fsStr) > *maxFilesWidth {
+			*maxFilesWidth = len(fsStr)
+		}
+	}
+	return result
 }

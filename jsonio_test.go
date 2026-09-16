@@ -17,12 +17,12 @@ func TestMarshalSummaryBasic(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	dirStats := map[string]*DirStat{
+	dirStats := StatMap{
 		".":   {Size: 1000, Files: 2},
 		"sub": {Size: 500, Files: 1},
 	}
-	userStats := map[string]*UserStat{"u1": {Size: 1500, Files: 3}}
-	groupStats := map[string]*GroupStat{"g1": {Size: 1500, Files: 3}}
+	userStats := StatMap{"u1": {Size: 1500, Files: 3}}
+	groupStats := StatMap{"g1": {Size: 1500, Files: 3}}
 
 	started := time.Now()
 	ended := started.Add(10 * time.Millisecond)

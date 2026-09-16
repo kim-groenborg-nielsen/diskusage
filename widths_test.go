@@ -11,15 +11,15 @@ func TestComputeSizeMapsAndWidths_AutoFitHuman(t *testing.T) {
 		"a": 1536,            // 1.5KB length 4
 		"b": 512,             // 512B length 4
 	}
-	dirstats := map[string]*DirStat{
+	dirstats := StatMap{
 		".": {Size: dirs["."], Files: 10},
 		"a": {Size: dirs["a"], Files: 2},
 		"b": {Size: dirs["b"], Files: 1},
 	}
-	users := map[string]*UserStat{
+	users := StatMap{
 		"u1": {Size: dirs["."], Files: 10},
 	}
-	groups := map[string]*GroupStat{}
+	groups := StatMap{}
 
 	sizeMap, _, _, sw, fw := ComputeSizeMapsAndWidths(dirs, dirstats, users, groups, false, 0, 0)
 	// expect size strings like "2.0MB", "1.5KB", "512B"
@@ -38,9 +38,9 @@ func TestComputeSizeMapsAndWidths_AutoFitHuman(t *testing.T) {
 
 func TestComputeSizeMapsAndWidths_BytesOverride(t *testing.T) {
 	dirs := map[string]int64{".": 2777066}
-	dirstats := map[string]*DirStat{".": {Size: 2777066, Files: 13}}
-	users := map[string]*UserStat{"u": {Size: 2777066, Files: 13}}
-	groups := map[string]*GroupStat{}
+	dirstats := StatMap{".": {Size: 2777066, Files: 13}}
+	users := StatMap{"u": {Size: 2777066, Files: 13}}
+	groups := StatMap{}
 
 	_, _, _, sw, fw := ComputeSizeMapsAndWidths(dirs, dirstats, users, groups, true, 0, 0)
 	// bytes length should be at least len("2777066") == 7
@@ -54,9 +54,9 @@ func TestComputeSizeMapsAndWidths_BytesOverride(t *testing.T) {
 
 func TestComputeSizeMapsAndWidths_OverridesAndTop(t *testing.T) {
 	dirs := map[string]int64{".": 1024}
-	dirstats := map[string]*DirStat{".": {Size: 1024, Files: 5}}
-	users := map[string]*UserStat{}
-	groups := map[string]*GroupStat{}
+	dirstats := StatMap{".": {Size: 1024, Files: 5}}
+	users := StatMap{}
+	groups := StatMap{}
 
 	_, _, _, sw, fw := ComputeSizeMapsAndWidths(dirs, dirstats, users, groups, false, 10, 6)
 	if sw != 10 {
